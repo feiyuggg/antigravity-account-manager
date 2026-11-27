@@ -23,10 +23,73 @@ describe('Environment isolation & keychain separation', () => {
     fs.mkdirSync(path.join(fakeRealHome, '.gemini', 'antigravity', 'conversations'), {
       recursive: true,
     });
+    fs.mkdirSync(
+      path.join(
+        fakeRealHome,
+        '.gemini',
+        'antigravity',
+        'sidecar_data',
+        'obsidian-prism',
+        'telemetry',
+        'history-v1',
+        'scope-a',
+      ),
+      { recursive: true },
+    );
     fs.writeFileSync(path.join(fakeRealHome, '.zshrc'), '# mock zshrc\n', 'utf8');
     fs.writeFileSync(
       path.join(fakeRealHome, '.gemini', 'config', 'skills', 'demo.txt'),
       'shared-skill',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(fakeRealHome, '.gemini', 'config', 'obsidian-prism-sidebar.json'),
+      JSON.stringify({ version: 2, items: ['real'] }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(fakeRealHome, '.gemini', 'config', 'obsidian-prism-wallpaper.json'),
+      JSON.stringify({ enabled: false }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(fakeRealHome, '.gemini', 'config', 'obsidian-prism-usage-rollup-cache.json'),
+      JSON.stringify({
+        version: 2,
+        scopes: {
+          local: {
+            '11111111-1111-4111-8111-111111111111': {
+              stepCount: 2,
+              lastModifiedSec: 100,
+              record: { days: { '2026-11-26': { total: 100 } } },
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(fakeRealHome, '.gemini', 'config', 'config.json'),
+      JSON.stringify({
+        plugins: { 'obsidian-prism': { enabled: true } },
+        sidecars: { 'obsidian-prism/daemon': { projectId: 'mock-prism-id', schemaVersion: 1 } },
+        userSettings: { accountEmail: 'owner@example.com' },
+      }),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(
+        fakeRealHome,
+        '.gemini',
+        'antigravity',
+        'sidecar_data',
+        'obsidian-prism',
+        'telemetry',
+        'history-v1',
+        'scope-a',
+        'conv-real.json',
+      ),
+      '{"total":1}',
       'utf8',
     );
     fs.writeFileSync(
@@ -62,6 +125,67 @@ describe('Environment isolation & keychain separation', () => {
         path.join(preSlotAntigravityDir, 'conversations', 'slot-only.db'),
         'slot-convo',
         'utf8',
+      );
+      fs.mkdirSync(
+        path.join(
+          preSlotAntigravityDir,
+          'sidecar_data',
+          'obsidian-prism',
+          'telemetry',
+          'history-v1',
+          'scope-a',
+        ),
+        { recursive: true },
+      );
+      fs.mkdirSync(
+        path.join(preSlotAntigravityDir, 'sidecar_data', 'obsidian-prism', 'daemon', 'logs'),
+        { recursive: true },
+      );
+      fs.writeFileSync(
+        path.join(
+          preSlotAntigravityDir,
+          'sidecar_data',
+          'obsidian-prism',
+          'telemetry',
+          'history-v1',
+          'scope-a',
+          'conv-slot.json',
+        ),
+        '{"total":2}',
+        'utf8',
+      );
+      fs.mkdirSync(path.join(profilesRoot, 'slot-alpha', '.gemini', 'config'), { recursive: true });
+      fs.writeFileSync(
+        path.join(
+          profilesRoot,
+          'slot-alpha',
+          '.gemini',
+          'config',
+          'obsidian-prism-usage-rollup-cache.json',
+        ),
+        JSON.stringify({
+          version: 2,
+          scopes: {
+            local: {
+              '11111111-1111-4111-8111-111111111111': {
+                stepCount: 5,
+                lastModifiedSec: 200,
+                record: { days: { '2026-11-27': { total: 200 } } },
+              },
+              '22222222-2222-4222-8222-222222222222': {
+                stepCount: 3,
+                lastModifiedSec: 150,
+                record: { days: { '2026-11-27': { total: 150 } } },
+              },
+            },
+          },
+        }),
+        'utf8',
+      );
+      // Pre-existing legacy symlink on obsidian-prism-wallpaper.json should be replaced with a regular file.
+      fs.symlinkSync(
+        path.join(fakeRealHome, '.gemini', 'config', 'obsidian-prism-wallpaper.json'),
+        path.join(profilesRoot, 'slot-alpha', '.gemini', 'config', 'obsidian-prism-wallpaper.json'),
       );
       fs.writeFileSync(path.join(realAntigravityDir, 'agyhub_summaries_proto.pb'), 'proto-v1', 'utf8');
 
@@ -155,6 +279,77 @@ describe('Environment isolation & keychain separation', () => {
           .lstatSync(path.join(built.profileHome, '.gemini', 'antigravity', 'annotations'))
           .isSymbolicLink(),
       ).toBe(true);
+
+      // Obsidian Prism telemetry/history-v1 merges nested files & symlinks while daemon/ stays per-slot,
+      // and Prism JSON configs stay regular non-symlink files (to satisfy Prism anti-symlink guards).
+      const realPrismHistoryDir = path.join(
+        fakeRealHome,
+        '.gemini',
+        'antigravity',
+        'sidecar_data',
+        'obsidian-prism',
+        'telemetry',
+        'history-v1',
+        'scope-a',
+      );
+      expect(fs.existsSync(path.join(realPrismHistoryDir, 'conv-real.json'))).toBe(true);
+      expect(fs.existsSync(path.join(realPrismHistoryDir, 'conv-slot.json'))).toBe(true);
+      expect(
+        fs
+          .lstatSync(
+            path.join(
+              built.profileHome,
+              '.gemini',
+              'antigravity',
+              'sidecar_data',
+              'obsidian-prism',
+              'telemetry',
+            ),
+          )
+          .isSymbolicLink(),
+      ).toBe(true);
+      expect(
+        fs
+          .lstatSync(
+            path.join(
+              built.profileHome,
+              '.gemini',
+              'antigravity',
+              'sidecar_data',
+              'obsidian-prism',
+              'daemon',
+            ),
+          )
+          .isSymbolicLink(),
+      ).toBe(false);
+
+      for (const regularPrismCfg of [
+        'obsidian-prism-sidebar.json',
+        'obsidian-prism-wallpaper.json',
+        'obsidian-prism-usage-rollup-cache.json',
+      ]) {
+        const cfgStat = fs.lstatSync(
+          path.join(built.profileHome, '.gemini', 'config', regularPrismCfg),
+        );
+        expect(cfgStat.isSymbolicLink()).toBe(false);
+        expect(cfgStat.isFile()).toBe(true);
+      }
+
+      const mergedRollup = JSON.parse(
+        fs.readFileSync(
+          path.join(built.profileHome, '.gemini', 'config', 'obsidian-prism-usage-rollup-cache.json'),
+          'utf8',
+        ),
+      );
+      expect(mergedRollup.scopes.local['11111111-1111-4111-8111-111111111111'].stepCount).toBe(5);
+      expect(mergedRollup.scopes.local['22222222-2222-4222-8222-222222222222'].stepCount).toBe(3);
+
+      const syncedHostCfg = JSON.parse(
+        fs.readFileSync(path.join(built.profileHome, '.gemini', 'config', 'config.json'), 'utf8'),
+      );
+      expect(syncedHostCfg.plugins?.['obsidian-prism']?.enabled).toBe(true);
+      expect(syncedHostCfg.sidecars?.['obsidian-prism/daemon']?.projectId).toBe('mock-prism-id');
+      expect(syncedHostCfg.userSettings).toBeUndefined();
 
       // Both real-only.db and migrated slot-only.db exist in fakeRealHome,
       // and conversation_summaries.db + agyhub_summaries_proto.pb are merged and symlinked

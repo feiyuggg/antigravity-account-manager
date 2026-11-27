@@ -28,9 +28,17 @@ const GEMINI_CONFIG_ITEMS_TO_SHARE = [
   'skills',
   'plugins',
   'rules',
+];
+
+const PRISM_REGULAR_CONFIG_FILES = [
   'obsidian-prism-sidebar.json',
   'obsidian-prism-wallpaper.json',
+  'obsidian-prism-thought.json',
+  'obsidian-prism-suggester.json',
+  'obsidian-prism-storage-guard-state.json',
 ];
+
+const PRISM_USAGE_ROLLUP_CACHE_FILENAME = 'obsidian-prism-usage-rollup-cache.json';
 
 const ANTIGRAVITY_SHARED_DATA_DIRS = [
   'conversations',
@@ -40,6 +48,15 @@ const ANTIGRAVITY_SHARED_DATA_DIRS = [
   'scratch',
   'knowledge',
   'chapter_titles',
+  'prism-knowledge-space',
+  'account_ledgers',
+];
+
+const ANTIGRAVITY_SHARED_LEDGER_FILES = [
+  'pricing_ledger_v1.json',
+  'token_usage_archive_v1.json',
+  'token_usage_archive_v2.json',
+  'custom_plan_v1.json',
 ];
 
 function sqlQuoteString(value: string): string {
@@ -319,10 +336,84 @@ function safeSymlink(targetPath: string, linkPath: string): void {
   fs.symlinkSync(targetPath, linkPath);
 }
 
+function statRegularFile(filePath: string): fs.Stats | null {
+  try {
+    const stat = fs.lstatSync(filePath);
+    return !stat.isSymbolicLink() && stat.isFile() ? stat : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRegularFileAtomic(filePath: string, content: string, mode = 0o600): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp.${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
+  try {
+    fs.writeFileSync(tmpPath, content, { encoding: 'utf8', mode });
+    fs.chmodSync(tmpPath, mode);
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
+}
+
+function mergeDirectoryContentsRecursive(srcDir: string, dstDir: string): void {
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const srcEntry = path.join(srcDir, entry.name);
+    const dstEntry = path.join(dstDir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+
+    let srcStat: fs.Stats;
+    try {
+      srcStat = fs.lstatSync(srcEntry);
+    } catch {
+      continue;
+    }
+    if (srcStat.isSymbolicLink()) continue;
+
+    let dstStat: fs.Stats | null = null;
+    try {
+      dstStat = fs.lstatSync(dstEntry);
+    } catch {
+      dstStat = null;
+    }
+
+    if (srcStat.isDirectory()) {
+      if (!dstStat) {
+        fs.cpSync(srcEntry, dstEntry, { recursive: true });
+      } else if (!dstStat.isSymbolicLink() && dstStat.isDirectory()) {
+        mergeDirectoryContentsRecursive(srcEntry, dstEntry);
+      }
+      continue;
+    }
+
+    if (srcStat.isFile()) {
+      if (!dstStat) {
+        fs.mkdirSync(path.dirname(dstEntry), { recursive: true });
+        fs.copyFileSync(srcEntry, dstEntry);
+      } else if (
+        !dstStat.isSymbolicLink() &&
+        dstStat.isFile() &&
+        srcStat.size > 0 &&
+        srcStat.mtimeMs > dstStat.mtimeMs
+      ) {
+        fs.copyFileSync(srcEntry, dstEntry);
+      }
+    }
+  }
+}
+
 /**
  * Link a shared directory from `realTargetDir` into `profileLinkPath`.
  * If `profileLinkPath` is already a real directory (e.g. an older isolated slot),
- * copy any unique entries back into `realTargetDir` before replacing it with a symlink.
+ * recursively merge any missing or newer entries back into `realTargetDir` before
+ * replacing it with a symlink.
  * Returns true if the symlink was newly created or replaced.
  */
 function linkSharedDirWithMerge(realTargetDir: string, profileLinkPath: string): boolean {
@@ -347,12 +438,7 @@ function linkSharedDirWithMerge(realTargetDir: string, profileLinkPath: string):
     }
 
     if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(profileLinkPath)) {
-        const destEntry = path.join(realTargetDir, entry);
-        if (!fs.existsSync(destEntry)) {
-          fs.cpSync(path.join(profileLinkPath, entry), destEntry, { recursive: true });
-        }
-      }
+      mergeDirectoryContentsRecursive(profileLinkPath, realTargetDir);
       fs.rmSync(profileLinkPath, { recursive: true, force: true });
       fs.symlinkSync(realTargetDir, profileLinkPath);
       return true;
@@ -364,6 +450,233 @@ function linkSharedDirWithMerge(realTargetDir: string, profileLinkPath: string):
   fs.mkdirSync(path.dirname(profileLinkPath), { recursive: true });
   fs.symlinkSync(realTargetDir, profileLinkPath);
   return true;
+}
+
+/**
+ * Sync Obsidian Prism JSON configs as regular `0o600` files (never symlinks,
+ * because Obsidian Prism enforces anti-symlink checks on `.gemini/config/obsidian-prism-*.json`).
+ */
+function syncPrismRegularConfigFiles(
+  realConfigDir: string,
+  profileConfigDir: string,
+  isProfileInUse: boolean,
+): void {
+  for (const filename of PRISM_REGULAR_CONFIG_FILES) {
+    const realFile = path.join(realConfigDir, filename);
+    const profileFile = path.join(profileConfigDir, filename);
+
+    unlinkIfSymlink(profileFile);
+
+    let realStat = statRegularFile(realFile);
+    let profileStat = statRegularFile(profileFile);
+
+    if (!isProfileInUse && profileStat && profileStat.size > 0) {
+      if (!realStat || profileStat.mtimeMs > realStat.mtimeMs) {
+        const content = fs.readFileSync(profileFile, 'utf8');
+        writeRegularFileAtomic(realFile, content, 0o600);
+        realStat = statRegularFile(realFile);
+      }
+    }
+
+    if (realStat) {
+      const shouldCopyToSlot =
+        !profileStat ||
+        (!isProfileInUse &&
+          (profileStat.size === 0 ||
+            realStat.mtimeMs > profileStat.mtimeMs ||
+            realStat.size !== profileStat.size));
+      if (shouldCopyToSlot) {
+        const content = fs.readFileSync(realFile, 'utf8');
+        writeRegularFileAtomic(profileFile, content, 0o600);
+      }
+    }
+  }
+}
+
+type RollupCacheRecord = {
+  lastModifiedSec?: number;
+  stepCount?: number;
+  [key: string]: unknown;
+};
+
+function parseUsageRollupScopes(filePath: string): Map<string, Map<string, RollupCacheRecord>> | null {
+  const st = statRegularFile(filePath);
+  if (!st || st.size === 0) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const obj = raw as Record<string, unknown>;
+    const scopes = new Map<string, Map<string, RollupCacheRecord>>();
+
+    const addBucket = (scopeKey: string, bucketRaw: unknown) => {
+      if (!bucketRaw || typeof bucketRaw !== 'object' || Array.isArray(bucketRaw)) return;
+      let bucket = scopes.get(scopeKey);
+      if (!bucket) {
+        bucket = new Map();
+        scopes.set(scopeKey, bucket);
+      }
+      for (const [convId, val] of Object.entries(bucketRaw as Record<string, unknown>)) {
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          bucket.set(convId.toLowerCase(), val as RollupCacheRecord);
+        }
+      }
+    };
+
+    if (obj.version === 2 && obj.scopes && typeof obj.scopes === 'object' && !Array.isArray(obj.scopes)) {
+      for (const [scopeKey, bucketRaw] of Object.entries(obj.scopes as Record<string, unknown>)) {
+        addBucket(scopeKey, bucketRaw);
+      }
+    } else {
+      addBucket('local', obj);
+    }
+
+    return scopes;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Losslessly merge and sync `obsidian-prism-usage-rollup-cache.json` across `realHome`
+ * and an isolated slot while keeping both copies regular `0o600` non-symlink files.
+ */
+function mergeAndSyncPrismUsageRollupCache(
+  realConfigDir: string,
+  profileConfigDir: string,
+  isProfileInUse: boolean,
+): void {
+  const realFile = path.join(realConfigDir, PRISM_USAGE_ROLLUP_CACHE_FILENAME);
+  const profileFile = path.join(profileConfigDir, PRISM_USAGE_ROLLUP_CACHE_FILENAME);
+
+  unlinkIfSymlink(profileFile);
+
+  const realScopes = parseUsageRollupScopes(realFile);
+  const profileScopes = parseUsageRollupScopes(profileFile);
+  if (!realScopes && !profileScopes) {
+    return;
+  }
+
+  const merged = new Map<string, Map<string, RollupCacheRecord>>();
+  const mergeFrom = (src: Map<string, Map<string, RollupCacheRecord>> | null) => {
+    if (!src) return;
+    for (const [scopeKey, bucket] of src.entries()) {
+      let targetBucket = merged.get(scopeKey);
+      if (!targetBucket) {
+        targetBucket = new Map();
+        merged.set(scopeKey, targetBucket);
+      }
+      for (const [convId, candidate] of bucket.entries()) {
+        const existing = targetBucket.get(convId);
+        if (!existing) {
+          targetBucket.set(convId, candidate);
+          continue;
+        }
+        const candSec = Number(candidate.lastModifiedSec ?? 0);
+        const curSec = Number(existing.lastModifiedSec ?? 0);
+        const candSteps = Number(candidate.stepCount ?? 0);
+        const curSteps = Number(existing.stepCount ?? 0);
+        if (candSec > curSec || (candSec === curSec && candSteps > curSteps)) {
+          targetBucket.set(convId, candidate);
+        }
+      }
+    }
+  };
+
+  mergeFrom(realScopes);
+  mergeFrom(profileScopes);
+
+  const serializedScopes: Record<string, Record<string, RollupCacheRecord>> = {};
+  for (const [scopeKey, bucket] of merged.entries()) {
+    if (bucket.size === 0) continue;
+    serializedScopes[scopeKey] = Object.fromEntries(bucket.entries());
+  }
+
+  const payload = JSON.stringify({ version: 2, scopes: serializedScopes }, null, 2) + '\n';
+  writeRegularFileAtomic(realFile, payload, 0o600);
+  if (!isProfileInUse || !statRegularFile(profileFile)) {
+    writeRegularFileAtomic(profileFile, payload, 0o600);
+  }
+}
+
+function readJsonObjectRegular(filePath: string): Record<string, unknown> | null {
+  if (!statRegularFile(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '').trim();
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sync ONLY non-secret `plugins` and `sidecars` enablement metadata from `realHome/.gemini/config/config.json`
+ * into an isolated slot's `.gemini/config/config.json` so native plugin sidecars (such as `obsidian-prism/daemon`)
+ * auto-start in newly created slots. Never reads or copies auth/account/userSettings fields.
+ */
+function syncHostPluginEnablement(realConfigDir: string, profileConfigDir: string): void {
+  const realCfgPath = path.join(realConfigDir, 'config.json');
+  const profileCfgPath = path.join(profileConfigDir, 'config.json');
+  if (fs.existsSync(profileCfgPath)) {
+    try {
+      if (fs.lstatSync(profileCfgPath).isSymbolicLink()) return;
+    } catch {
+      return;
+    }
+  }
+
+  const realObj = readJsonObjectRegular(realCfgPath);
+  if (!realObj) return;
+
+  const realPlugins =
+    realObj.plugins && typeof realObj.plugins === 'object' && !Array.isArray(realObj.plugins)
+      ? (realObj.plugins as Record<string, unknown>)
+      : null;
+  const realSidecars =
+    realObj.sidecars && typeof realObj.sidecars === 'object' && !Array.isArray(realObj.sidecars)
+      ? (realObj.sidecars as Record<string, unknown>)
+      : null;
+  if (!realPlugins && !realSidecars) return;
+
+  const slotObj = readJsonObjectRegular(profileCfgPath) ?? {};
+  let changed = false;
+
+  if (realPlugins) {
+    const existingPlugins =
+      slotObj.plugins && typeof slotObj.plugins === 'object' && !Array.isArray(slotObj.plugins)
+        ? { ...(slotObj.plugins as Record<string, unknown>) }
+        : {};
+    for (const [pluginId, pluginVal] of Object.entries(realPlugins)) {
+      if (!(pluginId in existingPlugins) && pluginVal && typeof pluginVal === 'object') {
+        existingPlugins[pluginId] = pluginVal;
+        changed = true;
+      }
+    }
+    if (!slotObj.plugins) changed = true;
+    slotObj.plugins = existingPlugins;
+  }
+
+  if (realSidecars) {
+    const existingSidecars =
+      slotObj.sidecars && typeof slotObj.sidecars === 'object' && !Array.isArray(slotObj.sidecars)
+        ? { ...(slotObj.sidecars as Record<string, unknown>) }
+        : {};
+    for (const [sidecarId, sidecarVal] of Object.entries(realSidecars)) {
+      if (!(sidecarId in existingSidecars) && sidecarVal && typeof sidecarVal === 'object') {
+        existingSidecars[sidecarId] = sidecarVal;
+        changed = true;
+      }
+    }
+    if (!slotObj.sidecars) changed = true;
+    slotObj.sidecars = existingSidecars;
+  }
+
+  if (changed || !fs.existsSync(profileCfgPath)) {
+    writeRegularFileAtomic(profileCfgPath, JSON.stringify(slotObj, null, 2) + '\n', 0o600);
+  }
 }
 
 function unlinkSharedDirIfSymlink(profileLinkPath: string): void {
@@ -475,6 +788,14 @@ export async function ensureIsolatedProfileReady(
           path.join(geminiConfigDir, item),
         );
       }
+      syncPrismRegularConfigFiles(
+        path.join(realHome, '.gemini', 'config'),
+        geminiConfigDir,
+        Boolean(options.isProfileInUse),
+      );
+      if (!options.isProfileInUse) {
+        syncHostPluginEnablement(path.join(realHome, '.gemini', 'config'), geminiConfigDir);
+      }
     }
 
     if (options.shareConversationsAndProjects !== false) {
@@ -494,6 +815,25 @@ export async function ensureIsolatedProfileReady(
         );
       }
 
+      // Share Obsidian Prism telemetry history/usage data while keeping per-slot daemon logs/locks separate.
+      linkSharedDirWithMerge(
+        path.join(realHome, '.gemini', 'antigravity', 'sidecar_data', 'obsidian-prism', 'telemetry'),
+        path.join(antigravityDataDir, 'sidecar_data', 'obsidian-prism', 'telemetry'),
+      );
+
+      for (const fileName of ANTIGRAVITY_SHARED_LEDGER_FILES) {
+        linkSharedFileIfDefault(
+          path.join(realHome, '.gemini', 'antigravity', fileName),
+          path.join(antigravityDataDir, fileName),
+        );
+      }
+
+      mergeAndSyncPrismUsageRollupCache(
+        path.join(realHome, '.gemini', 'config'),
+        geminiConfigDir,
+        Boolean(options.isProfileInUse),
+      );
+
       await mergeAndLinkConversationSummaries(
         path.join(realHome, '.gemini', 'antigravity'),
         antigravityDataDir,
@@ -504,6 +844,12 @@ export async function ensureIsolatedProfileReady(
       unlinkIfSymlink(path.join(geminiConfigDir, 'mcp_config.json'));
       for (const dirName of ANTIGRAVITY_SHARED_DATA_DIRS) {
         unlinkSharedDirIfSymlink(path.join(antigravityDataDir, dirName));
+      }
+      unlinkSharedDirIfSymlink(
+        path.join(antigravityDataDir, 'sidecar_data', 'obsidian-prism', 'telemetry'),
+      );
+      for (const fileName of ANTIGRAVITY_SHARED_LEDGER_FILES) {
+        unlinkIfSymlink(path.join(antigravityDataDir, fileName));
       }
       unlinkIfSymlink(path.join(antigravityDataDir, 'conversation_summaries.db'));
       unlinkIfSymlink(path.join(antigravityDataDir, 'agyhub_summaries_proto.pb'));
@@ -601,5 +947,8 @@ export function removeIsolatedProfileDir(
   unlinkSymlinksInDir(profileHome);
   unlinkSymlinksInDir(path.join(profileHome, '.gemini', 'config'));
   unlinkSymlinksInDir(path.join(profileHome, '.gemini', 'antigravity'));
+  unlinkSymlinksInDir(
+    path.join(profileHome, '.gemini', 'antigravity', 'sidecar_data', 'obsidian-prism'),
+  );
   fs.rmSync(profileHome, { recursive: true, force: true });
 }
