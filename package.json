@@ -1,6 +1,6 @@
 {
   "name": "antigravity-account-manager",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "macOS Electron account manager for Google Antigravity using environment isolation and exclusive agy acp authentication",
   "author": "feiyuggg",

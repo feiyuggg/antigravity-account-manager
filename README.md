@@ -2,7 +2,7 @@
 
 <p align="left">
   <a href="https://github.com/feiyuggg/antigravity-account-manager/releases/latest">
-    <img src="https://img.shields.io/badge/release-v1.0.3-blue" alt="Latest Release v1.0.3" />
+    <img src="https://img.shields.io/badge/release-v1.0.4-blue" alt="Latest Release v1.0.4" />
   </a>
   <img src="https://img.shields.io/badge/platform-macOS%20arm64-0f172a" alt="macOS arm64" />
   <img src="https://img.shields.io/badge/auth-official%20agy%20acp-10b981" alt="Official agy acp" />
@@ -78,8 +78,8 @@ flowchart LR
 
 前往 [Releases 页面](https://github.com/feiyuggg/antigravity-account-manager/releases) 下载最新安装包：
 
-- `Antigravity-Account-Manager-1.0.3-macOS-arm64.dmg`（推荐，打开后拖入 `Applications`）
-- 或 `Antigravity-Account-Manager-1.0.3-macOS-arm64.zip`
+- `Antigravity-Account-Manager-1.0.4-macOS-arm64.dmg`（推荐，打开后拖入 `Applications`）
+- 或 `Antigravity-Account-Manager-1.0.4-macOS-arm64.zip`
 
 > **首次打开提示处理**：当前 Release 使用本地 ad-hoc 签名（未经 Apple 公证）。若拖入 `/Applications` 后首次打开提示「无法验证开发者」或「已损坏」，请在终端执行一次：
 > ```bash
