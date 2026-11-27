@@ -1,12 +1,16 @@
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { AuditEntry } from '../shared/types';
 import {
+  buildHookShellCommand,
   extractPreservedLaunchArgs,
   extractRemoteDebuggingPort,
   getAntigravityAppStatus,
   hasRemoteDebuggingPortFlag,
+  isAntigravityCdpPageTarget,
   launchAppWithEnv,
   mergeLaunchArgs,
   parseLaunchArgs,
@@ -14,6 +18,7 @@ import {
   runPostRestartCommand,
   runPostRestartCommands,
   syncDevToolsActivePort,
+  waitForAntigravityCdpPage,
 } from '../electron/antigravityApp';
 
 function createDummyAppBundle(rootDir: string, outFile: string): string {
@@ -99,6 +104,107 @@ describe('App lifecycle: launch-arg preservation, --env + --args relaunch, and p
     expect(zeroPort).toEqual(['--remote-debugging-port=0']);
     expect(hasRemoteDebuggingPortFlag(zeroPort)).toBe(true);
     expect(hasRemoteDebuggingPortFlag(['--remote-debugging-port=58321'])).toBe(true);
+  });
+
+  it('filters CDP targets and waits until a workbench page appears', async () => {
+    expect(
+      isAntigravityCdpPageTarget({
+        type: 'page',
+        url: 'data:text/html,<html>splash</html>',
+      }),
+    ).toBe(false);
+    expect(
+      isAntigravityCdpPageTarget({
+        type: 'iframe',
+        url: 'plugin://swarm--swarm_board-1234/',
+      }),
+    ).toBe(false);
+    expect(
+      isAntigravityCdpPageTarget({
+        type: 'page',
+        url: 'devtools://devtools/bundled/inspector.html',
+      }),
+    ).toBe(false);
+    expect(
+      isAntigravityCdpPageTarget({
+        type: 'page',
+        url: 'https://127.0.0.1:53892/c/test-session?project=demo',
+      }),
+    ).toBe(true);
+    expect(
+      isAntigravityCdpPageTarget({
+        type: 'page',
+        url: 'vscode-file://vscode-app/Applications/Antigravity.app/workbench.html',
+      }),
+    ).toBe(true);
+
+    let polls = 0;
+    const server = http.createServer((req, res) => {
+      if (req.url === '/json/list') {
+        polls += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        const payload =
+          polls < 3
+            ? [{ type: 'page', url: 'data:text/html,splash', title: 'splash' }]
+            : [
+                { type: 'page', url: 'data:text/html,splash', title: 'splash' },
+                { type: 'page', url: 'https://127.0.0.1:53892/c/abc', title: 'Antigravity' },
+              ];
+        res.end(JSON.stringify(payload));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    try {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      const ready = await waitForAntigravityCdpPage(port, {
+        timeoutMs: 3000,
+        pollIntervalMs: 50,
+        settleDelayMs: 20,
+      });
+      expect(ready).toBe(true);
+      expect(polls).toBeGreaterThanOrEqual(3);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('builds preferred PATH shell hook command and captures hook output & failures', async () => {
+    const wrapped = buildHookShellCommand('node -v', ['/opt/homebrew/opt/node@22/bin']);
+    expect(wrapped).toBe('export PATH=\'/opt/homebrew/opt/node@22/bin\':"$PATH"; node -v');
+
+    const audits: AuditEntry[] = [];
+    const result = await runPostRestartCommands(
+      [
+        { name: 'OkHook', command: 'echo "hook_stdout_ok"', enabled: true },
+        { name: 'FailHook', command: 'echo "hook_err_detail" >&2; exit 23', enabled: true },
+      ],
+      {
+        waitForPort: null,
+        fallbackDelayMs: 20,
+        hookObserveWindowMs: 3000,
+        onAudit: (entry) => {
+          const idx = audits.findIndex((a) => a.id === entry.id);
+          if (idx >= 0) audits[idx] = entry;
+          else audits.push(entry);
+        },
+      },
+    );
+
+    expect(result.total).toBe(2);
+    expect(result.succeeded).toBe(1);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].name).toBe('FailHook');
+    expect(result.failed[0].detail).toContain('exit=23');
+    expect(result.failed[0].detail).toContain('hook_err_detail');
+
+    const okAudit = audits.find((a) => a.operation === 'post-restart hook: OkHook');
+    expect(okAudit?.status).toBe('ok');
+    expect(okAudit?.detail).toContain('hook_stdout_ok');
   });
 
   it('syncs DevToolsActivePort from isolated profile to realHome and runs multiple hooks', async () => {

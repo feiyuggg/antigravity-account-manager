@@ -1,12 +1,17 @@
 import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import type { AntigravityAppStatus, AuditEntry } from '../shared/types';
-import { buildBaseEnv } from './acp/binary';
+import type {
+  AntigravityAppStatus,
+  AuditEntry,
+  PostRestartHooksResult,
+} from '../shared/types';
+import { buildBaseEnv, getPreferredRuntimeBinDirs } from './acp/binary';
 
 const execFileAsync = promisify(execFile);
 
@@ -476,9 +481,275 @@ export async function syncDevToolsActivePort(options: {
   return null;
 }
 
+const BLOCKED_CDP_URL_PREFIXES = [
+  'devtools:',
+  'data:',
+  'about:',
+  'chrome:',
+  'chrome-extension:',
+  'edge:',
+  'blob:',
+  'plugin:',
+];
+
+const EXCLUDED_LOOPBACK_PATH_RE = /^\/(?:viewer|sandbox|stream|api)(?:\/|$)/i;
+
+/**
+ * Identify whether a `/json/list` target represents a live Antigravity workbench page
+ * rather than a splash `data:` page, sidecar `plugin:` iframe, or `devtools://` target.
+ */
+export function isAntigravityCdpPageTarget(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false;
+  const record = target as Record<string, unknown>;
+  if (record.type !== 'page' || typeof record.url !== 'string') return false;
+  const url = record.url.trim();
+  if (!url) return false;
+
+  const lowerUrl = url.toLowerCase();
+  if (BLOCKED_CDP_URL_PREFIXES.some((prefix) => lowerUrl.startsWith(prefix))) {
+    return false;
+  }
+  if (lowerUrl.startsWith('vscode-file://') || lowerUrl.startsWith('app://')) {
+    return true;
+  }
+  if (lowerUrl.startsWith('file://')) {
+    return /workbench|antigravity/i.test(lowerUrl);
+  }
+
+  const loopbackMatch =
+    /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(\/[^?#]*)?(?:[?#]|$)/i.exec(url);
+  if (!loopbackMatch) {
+    return false;
+  }
+  const pathname = loopbackMatch[1] ?? '/';
+  return !EXCLUDED_LOOPBACK_PATH_RE.test(pathname);
+}
+
+function fetchCdpTargets(port: number, timeoutMs = 1200): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(
+      {
+        hostname: '127.0.0.1',
+        port,
+        path: '/json/list',
+        agent: false,
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode ?? 0}`));
+            return;
+          }
+          try {
+            const parsed = JSON.parse(body);
+            resolve(Array.isArray(parsed) ? parsed : []);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('CDP /json/list timeout'));
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Poll CDP `/json/list` until a real Antigravity workbench page appears, then wait briefly
+ * so renderer scripts have mounted before attaching live-injection plugins.
+ */
+export async function waitForAntigravityCdpPage(
+  port: number,
+  options?: { timeoutMs?: number; pollIntervalMs?: number; settleDelayMs?: number },
+): Promise<boolean> {
+  const timeoutMs = options?.timeoutMs ?? 20000;
+  const pollIntervalMs = options?.pollIntervalMs ?? 300;
+  const settleDelayMs = options?.settleDelayMs ?? 1200;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const targets = await fetchCdpTargets(port, 1200);
+      if (targets.some(isAntigravityCdpPageTarget)) {
+        if (settleDelayMs > 0) {
+          await sleep(settleDelayMs);
+        }
+        return true;
+      }
+    } catch {
+      // CDP endpoint may not be accepting HTTP yet
+    }
+    await sleep(pollIntervalMs);
+  }
+  return false;
+}
+
+/**
+ * Prepend modern Homebrew Node directories inside `/bin/zsh -lc` after macOS `/etc/zprofile`
+ * runs `path_helper` (which otherwise places `/usr/local/bin` before Homebrew kegs).
+ */
+export function buildHookShellCommand(
+  command: string,
+  preferredBinDirs: string[] = getPreferredRuntimeBinDirs(),
+): string {
+  if (preferredBinDirs.length === 0) {
+    return command;
+  }
+  const joined = preferredBinDirs.join(':').replace(/'/g, "'\\''");
+  return `export PATH='${joined}':"$PATH"; ${command}`;
+}
+
+function readHookLogTail(logPath: string, maxChars = 350): string {
+  try {
+    const raw = fs.readFileSync(logPath, 'utf8');
+    // eslint-disable-next-line no-control-regex
+    const stripped = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+    const normalized = stripped.replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    return normalized.length > maxChars ? `...${normalized.slice(-maxChars)}` : normalized;
+  } catch {
+    return '';
+  }
+}
+
+async function executeSingleHook(
+  item: { name: string; command: string },
+  options: { observeWindowMs: number; onAudit?: AuditSink },
+): Promise<{ ok: boolean; name: string; detail: string }> {
+  const trimmed = item.command.trim();
+  const label = item.name.trim() || 'unnamed';
+  const auditId = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  options.onAudit?.({
+    id: auditId,
+    timestamp: new Date().toISOString(),
+    source: 'APP_LIFECYCLE',
+    operation: `post-restart hook: ${label}`,
+    status: 'running',
+    detail: trimmed,
+  });
+
+  const logDir = path.join(os.tmpdir(), 'agy-account-manager-hooks');
+  fs.mkdirSync(logDir, { recursive: true });
+  const logPath = path.join(logDir, `${auditId}.log`);
+  const shellCommand = buildHookShellCommand(trimmed);
+
+  let logFd: number | null = null;
+  let child: ReturnType<typeof spawn>;
+  try {
+    logFd = fs.openSync(logPath, 'w');
+    child = spawn('/bin/zsh', ['-lc', shellCommand], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: buildBaseEnv(),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fs.rmSync(logPath, { force: true });
+    options.onAudit?.({
+      id: auditId,
+      timestamp: new Date().toISOString(),
+      source: 'APP_LIFECYCLE',
+      operation: `post-restart hook: ${label}`,
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      detail: msg,
+    });
+    return { ok: false, name: label, detail: msg };
+  } finally {
+    if (logFd !== null) {
+      try {
+        fs.closeSync(logFd);
+      } catch {
+        // ignore fd close failure
+      }
+    }
+  }
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: { ok: boolean; name: string; detail: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      child.unref();
+      const tail = readHookLogTail(logPath);
+      const detail = tail ? `后台运行中 (PID ${child.pid ?? 'unknown'}) | ${tail}` : `后台运行中 (PID ${child.pid ?? 'unknown'})`;
+      options.onAudit?.({
+        id: auditId,
+        timestamp: new Date().toISOString(),
+        source: 'APP_LIFECYCLE',
+        operation: `post-restart hook: ${label}`,
+        status: 'ok',
+        durationMs: Date.now() - startedAt,
+        detail,
+      });
+      finish({ ok: true, name: label, detail });
+    }, options.observeWindowMs);
+
+    child.once('error', (err) => {
+      const tail = readHookLogTail(logPath);
+      fs.rmSync(logPath, { force: true });
+      const detail = tail ? `${err.message} | ${tail}` : err.message;
+      options.onAudit?.({
+        id: auditId,
+        timestamp: new Date().toISOString(),
+        source: 'APP_LIFECYCLE',
+        operation: `post-restart hook: ${label}`,
+        status: 'error',
+        durationMs: Date.now() - startedAt,
+        detail,
+      });
+      finish({ ok: false, name: label, detail });
+    });
+
+    child.once('exit', (code, signal) => {
+      const tail = readHookLogTail(logPath);
+      fs.rmSync(logPath, { force: true });
+      if (code === 0) {
+        const detail = tail ? `${trimmed} | ${tail}` : trimmed;
+        options.onAudit?.({
+          id: auditId,
+          timestamp: new Date().toISOString(),
+          source: 'APP_LIFECYCLE',
+          operation: `post-restart hook: ${label}`,
+          status: 'ok',
+          durationMs: Date.now() - startedAt,
+          detail,
+        });
+        finish({ ok: true, name: label, detail });
+      } else {
+        const exitDesc = code !== null ? `exit=${code}` : `signal=${signal ?? 'unknown'}`;
+        const detail = tail ? `${exitDesc} | ${tail}` : exitDesc;
+        options.onAudit?.({
+          id: auditId,
+          timestamp: new Date().toISOString(),
+          source: 'APP_LIFECYCLE',
+          operation: `post-restart hook: ${label}`,
+          status: 'error',
+          durationMs: Date.now() - startedAt,
+          detail,
+        });
+        finish({ ok: false, name: label, detail });
+      }
+    });
+  });
+}
+
 /**
  * Run one or more user-configured post-restart commands (e.g. hot-attaching Context Viewer
- * and Obsidian Prism) in the host user's normal environment once the target CDP port is ready.
+ * and Obsidian Prism) in the host user's normal environment once the workbench CDP page is ready.
  */
 export async function runPostRestartCommands(
   items: Array<{ name: string; command: string; enabled: boolean }>,
@@ -488,13 +759,16 @@ export async function runPostRestartCommands(
     profileHome?: string;
     realHome?: string;
     launchedAtMs?: number;
+    cdpReadyTimeoutMs?: number;
+    cdpSettleDelayMs?: number;
+    hookObserveWindowMs?: number;
     fallbackDelayMs?: number;
     onAudit?: AuditSink;
   },
-): Promise<void> {
+): Promise<PostRestartHooksResult> {
   const enabledItems = items.filter((item) => item.enabled && item.command.trim().length > 0);
   if (!options?.hasCdpFlag && enabledItems.length === 0) {
-    return;
+    return { total: 0, succeeded: 0, failed: [] };
   }
 
   let effectivePort =
@@ -514,68 +788,63 @@ export async function runPostRestartCommands(
   }
 
   if (enabledItems.length === 0) {
-    return;
+    return { total: 0, succeeded: 0, failed: [] };
   }
 
   if (effectivePort && effectivePort >= 1) {
-    await waitForLoopbackPort(effectivePort, 8000);
-    await sleep(500);
+    const pageReady = await waitForAntigravityCdpPage(effectivePort, {
+      timeoutMs: options?.cdpReadyTimeoutMs ?? 20000,
+      settleDelayMs: options?.cdpSettleDelayMs ?? 1200,
+    });
+    if (!pageReady) {
+      options?.onAudit?.({
+        id: crypto.randomUUID(),
+        timestamp: new Date().toISOString(),
+        source: 'APP_LIFECYCLE',
+        operation: 'wait CDP workbench page',
+        status: 'error',
+        detail: `端口 ${effectivePort} 在超时内未检测到 Antigravity 工作台页面，将回退直接尝试挂载`,
+      });
+      await waitForLoopbackPort(effectivePort, 4000);
+      await sleep(1500);
+    }
   } else {
     await sleep(options?.fallbackDelayMs ?? 1500);
   }
 
+  const observeWindowMs = options?.hookObserveWindowMs ?? 12000;
+  let succeeded = 0;
+  const failed: Array<{ name: string; detail: string }> = [];
+
   for (const item of enabledItems) {
-    const trimmed = item.command.trim();
-    const label = item.name.trim() || 'unnamed';
-    const auditId = crypto.randomUUID();
-    const startedAt = Date.now();
-
-    options?.onAudit?.({
-      id: auditId,
-      timestamp: new Date().toISOString(),
-      source: 'APP_LIFECYCLE',
-      operation: `post-restart hook: ${label}`,
-      status: 'running',
-      detail: trimmed,
+    const res = await executeSingleHook(item, {
+      observeWindowMs,
+      onAudit: options?.onAudit,
     });
-
-    try {
-      const child = spawn('/bin/zsh', ['-lc', trimmed], {
-        detached: true,
-        stdio: 'ignore',
-        env: buildBaseEnv(),
-      });
-      child.unref();
-
-      options?.onAudit?.({
-        id: auditId,
-        timestamp: new Date().toISOString(),
-        source: 'APP_LIFECYCLE',
-        operation: `post-restart hook: ${label}`,
-        status: 'ok',
-        durationMs: Date.now() - startedAt,
-        detail: trimmed,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      options?.onAudit?.({
-        id: auditId,
-        timestamp: new Date().toISOString(),
-        source: 'APP_LIFECYCLE',
-        operation: `post-restart hook: ${label}`,
-        status: 'error',
-        durationMs: Date.now() - startedAt,
-        detail: msg,
-      });
+    if (res.ok) {
+      succeeded += 1;
+    } else {
+      failed.push({ name: res.name, detail: res.detail });
     }
   }
+
+  return {
+    total: enabledItems.length,
+    succeeded,
+    failed,
+  };
 }
 
 export async function runPostRestartCommand(
   command: string,
-  options?: { waitForPort?: number | null; fallbackDelayMs?: number; onAudit?: AuditSink },
-): Promise<void> {
-  await runPostRestartCommands(
+  options?: {
+    waitForPort?: number | null;
+    fallbackDelayMs?: number;
+    hookObserveWindowMs?: number;
+    onAudit?: AuditSink;
+  },
+): Promise<PostRestartHooksResult> {
+  return await runPostRestartCommands(
     [{ name: 'hook', command, enabled: true }],
     options,
   );

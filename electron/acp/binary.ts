@@ -8,6 +8,29 @@ const execFileAsync = promisify(execFile);
 
 const STANDARD_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
 
+const PREFERRED_RUNTIME_BIN_CANDIDATES = [
+  '/opt/homebrew/opt/node@24/bin',
+  '/opt/homebrew/opt/node@22/bin',
+  '/opt/homebrew/opt/node/bin',
+  '/usr/local/opt/node@24/bin',
+  '/usr/local/opt/node@22/bin',
+  '/usr/local/opt/node/bin',
+];
+
+/**
+ * Return existing modern Homebrew Node bin directories in priority order so
+ * detached hook scripts pick Node 22+ instead of legacy `/usr/local/bin/node`.
+ */
+export function getPreferredRuntimeBinDirs(): string[] {
+  return PREFERRED_RUNTIME_BIN_CANDIDATES.filter((dir) => {
+    try {
+      return fs.statSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * Build a sanitized base environment for spawning official `agy` and macOS helper commands.
  */
@@ -15,9 +38,12 @@ export function buildBaseEnv(extraEnv?: Record<string, string>): NodeJS.ProcessE
   const home = os.homedir();
   const localBin = path.join(home, '.local', 'bin');
   const currentPath = process.env.PATH ?? '';
-  const pathParts = [localBin, ...STANDARD_PATHS, ...currentPath.split(path.delimiter)].filter(
-    Boolean,
-  );
+  const pathParts = [
+    localBin,
+    ...getPreferredRuntimeBinDirs(),
+    ...STANDARD_PATHS,
+    ...currentPath.split(path.delimiter),
+  ].filter(Boolean);
   const dedupedPath = Array.from(new Set(pathParts)).join(path.delimiter);
 
   const env: NodeJS.ProcessEnv = {

@@ -261,6 +261,11 @@ export default function App() {
             settings={state.settings}
             runtimeInfo={state.runtimeInfo}
             onUpdateSettings={handleUpdateSettings}
+            onRunPostRestartHooks={async () => {
+              const res = await window.accountManager.runPostRestartHooks();
+              setState(res.snapshot);
+              return res.result;
+            }}
             onOpenProfilesFolder={() => void window.accountManager.openProfileInFinder()}
           />
         )}

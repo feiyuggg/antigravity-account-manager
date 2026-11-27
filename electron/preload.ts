@@ -4,6 +4,7 @@ import type {
   AppSettings,
   AppStateSnapshot,
   LoginStartInput,
+  PostRestartHooksResult,
   SwitchStartInput,
 } from '../shared/types';
 
@@ -17,6 +18,7 @@ export interface AccountManagerApi {
   startLogin: (input: LoginStartInput) => Promise<void>;
   startSwitchAndRestart: (input: SwitchStartInput) => Promise<void>;
   restartActiveApp: () => Promise<void>;
+  runPostRestartHooks: () => Promise<{ snapshot: AppStateSnapshot; result: PostRestartHooksResult }>;
   submitAuthCode: (code: string) => Promise<void>;
   cancelWorkflow: () => Promise<void>;
   logoutAccount: (accountId: string) => Promise<AppStateSnapshot>;
@@ -39,6 +41,7 @@ const api: AccountManagerApi = {
   startLogin: (input) => ipcRenderer.invoke('acp:loginStart', input),
   startSwitchAndRestart: (input) => ipcRenderer.invoke('app:switchAndRestart', input),
   restartActiveApp: () => ipcRenderer.invoke('app:restartActive'),
+  runPostRestartHooks: () => ipcRenderer.invoke('app:runPostRestartHooks'),
   submitAuthCode: (code) => ipcRenderer.invoke('acp:submitCode', code),
   cancelWorkflow: () => ipcRenderer.invoke('workflow:cancel'),
   logoutAccount: (accountId) => ipcRenderer.invoke('acp:logoutAccount', accountId),

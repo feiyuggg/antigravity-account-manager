@@ -24,7 +24,13 @@ const SHELL_DOTFILES_TO_LINK = [
   '.npmrc',
 ];
 
-const GEMINI_CONFIG_ITEMS_TO_SHARE = ['skills', 'plugins', 'rules'];
+const GEMINI_CONFIG_ITEMS_TO_SHARE = [
+  'skills',
+  'plugins',
+  'rules',
+  'obsidian-prism-sidebar.json',
+  'obsidian-prism-wallpaper.json',
+];
 
 const ANTIGRAVITY_SHARED_DATA_DIRS = [
   'conversations',

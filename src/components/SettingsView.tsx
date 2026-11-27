@@ -1,9 +1,10 @@
-import { FolderOpen, Plus, Trash2 } from 'lucide-react';
+import { FolderOpen, Play, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import type {
   AppSettings,
   AuthMode,
   PostRestartCommandItem,
+  PostRestartHooksResult,
   RuntimeInfo,
 } from '../../shared/types';
 
@@ -11,6 +12,7 @@ interface SettingsViewProps {
   settings: AppSettings;
   runtimeInfo: RuntimeInfo | null;
   onUpdateSettings: (partial: Partial<AppSettings>) => Promise<void>;
+  onRunPostRestartHooks: () => Promise<PostRestartHooksResult>;
   onOpenProfilesFolder: () => void;
 }
 
@@ -18,6 +20,7 @@ export function SettingsView({
   settings,
   runtimeInfo,
   onUpdateSettings,
+  onRunPostRestartHooks,
   onOpenProfilesFolder,
 }: SettingsViewProps) {
   const [agyInput, setAgyInput] = useState(settings.agyPathOverride);
@@ -39,6 +42,8 @@ export function SettingsView({
         : [],
   );
   const [savedNotice, setSavedNotice] = useState(false);
+  const [hooksRunning, setHooksRunning] = useState(false);
+  const [hooksNotice, setHooksNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const handleAddCommand = () => {
     setPostCommands((prev) => [
@@ -80,6 +85,33 @@ export function SettingsView({
     });
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 1800);
+  };
+
+  const handleRunHooksNow = async () => {
+    setHooksRunning(true);
+    setHooksNotice(null);
+    try {
+      await handleSavePaths();
+      const res = await onRunPostRestartHooks();
+      if (res.total === 0) {
+        setHooksNotice({ ok: false, text: '没有已启用的重启后命令' });
+      } else if (res.failed.length === 0) {
+        setHooksNotice({ ok: true, text: `已成功执行 ${res.succeeded}/${res.total} 个插件命令` });
+      } else {
+        const failedNames = res.failed.map((f) => f.name).join('、');
+        setHooksNotice({
+          ok: false,
+          text: `${res.succeeded}/${res.total} 成功；失败：${failedNames}（请查看「ACP 审计日志」）`,
+        });
+      }
+    } catch (err) {
+      setHooksNotice({
+        ok: false,
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setHooksRunning(false);
+    }
   };
 
   return (
@@ -186,11 +218,38 @@ export function SettingsView({
                 <code>obsidian-prism</code> 的 <code>npm run inject</code>）。<strong>切勿带 --relaunch</strong>，否则插件会以默认环境重开客户端导致切回原账号。
               </div>
             </div>
-            <button type="button" className="btn btn-sm" onClick={handleAddCommand}>
-              <Plus size={13} />
-              添加命令
-            </button>
+            <div className="action-group">
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={hooksRunning || !postCommands.some((c) => c.enabled && c.command.trim())}
+                onClick={() => void handleRunHooksNow()}
+                title="保存当前设置并立即对运行中的 Antigravity 窗口执行已启用命令"
+              >
+                <Play size={13} />
+                {hooksRunning ? '执行中...' : '立即执行命令'}
+              </button>
+              <button type="button" className="btn btn-sm" onClick={handleAddCommand}>
+                <Plus size={13} />
+                添加命令
+              </button>
+            </div>
           </div>
+
+          {hooksNotice && (
+            <div
+              style={{
+                fontSize: '12px',
+                padding: '6px 10px',
+                borderRadius: '6px',
+                background: hooksNotice.ok ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                color: hooksNotice.ok ? '#10b981' : '#ef4444',
+                marginTop: '6px',
+              }}
+            >
+              {hooksNotice.text}
+            </div>
+          )}
 
           {postCommands.length === 0 ? (
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '6px 0' }}>

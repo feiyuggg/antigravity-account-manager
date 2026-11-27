@@ -22,6 +22,8 @@ import type {
   AuditEntry,
   AuthMode,
   LoginStartInput,
+  PostRestartCommandItem,
+  PostRestartHooksResult,
   ProfileSessionStatus,
   RuntimeInfo,
   SwitchStartInput,
@@ -483,11 +485,34 @@ async function executeAcpLoginInProfile(
   }
 }
 
+function getEffectivePostRestartCommands(settings: AppSettings): PostRestartCommandItem[] {
+  if (settings.postRestartCommands && settings.postRestartCommands.length > 0) {
+    return settings.postRestartCommands;
+  }
+  if (settings.postRestartCommand.trim()) {
+    return [
+      {
+        id: 'legacy-post-cmd',
+        name: '重启后命令',
+        command: settings.postRestartCommand.trim(),
+        enabled: true,
+      },
+    ];
+  }
+  return [];
+}
+
+function formatHookWarningSuffix(hooksResult?: PostRestartHooksResult): string {
+  if (!hooksResult || hooksResult.failed.length === 0) return '';
+  const failedNames = hooksResult.failed.map((f) => f.name).join('、');
+  return `（⚠️ ${hooksResult.failed.length} 个插件命令执行失败：${failedNames}，请在「ACP 审计日志」查看详情）`;
+}
+
 async function restartAntigravityForAccount(
   target: AccountProfile,
   settings: AppSettings,
   envPreview: Record<string, string>,
-): Promise<void> {
+): Promise<PostRestartHooksResult> {
   if (!fs.existsSync(settings.antigravityAppPath)) {
     throw new Error(`未找到 Antigravity 应用: ${settings.antigravityAppPath}`);
   }
@@ -527,27 +552,15 @@ async function restartAntigravityForAccount(
   appStatus = await getAntigravityAppStatus(settings.antigravityAppPath);
 
   const hasCdpFlag = hasRemoteDebuggingPortFlag(launchArgs);
-  const effectiveCommands =
-    settings.postRestartCommands && settings.postRestartCommands.length > 0
-      ? settings.postRestartCommands
-      : settings.postRestartCommand.trim()
-        ? [
-            {
-              id: 'legacy-post-cmd',
-              name: '重启后命令',
-              command: settings.postRestartCommand.trim(),
-              enabled: true,
-            },
-          ]
-        : [];
+  const effectiveCommands = getEffectivePostRestartCommands(settings);
 
   if (hasCdpFlag || effectiveCommands.some((c) => c.enabled && c.command.trim())) {
     workflowState = {
       ...workflowState,
-      message: 'Antigravity 已重启，正在同步调试端口并自动挂载扩展插件...',
+      message: 'Antigravity 已重启，正在等待工作台 CDP 页面就绪并自动挂载扩展插件...',
     };
     broadcastState();
-    await runPostRestartCommands(effectiveCommands, {
+    return await runPostRestartCommands(effectiveCommands, {
       waitForPort: extractRemoteDebuggingPort(launchArgs),
       hasCdpFlag,
       profileHome: envPreview.HOME,
@@ -555,6 +568,8 @@ async function restartAntigravityForAccount(
       onAudit: recordAudit,
     });
   }
+
+  return { total: 0, succeeded: 0, failed: [] };
 }
 
 async function startLoginFlow(input: LoginStartInput): Promise<void> {
@@ -628,10 +643,12 @@ async function startLoginFlow(input: LoginStartInput): Promise<void> {
 
     const latestTarget = store.getAccount(target.id) ?? target;
 
+    let hooksResult: PostRestartHooksResult | undefined;
     if (input.restartAfterLogin) {
-      await restartAntigravityForAccount(latestTarget, settings, built.envPreview);
+      hooksResult = await restartAntigravityForAccount(latestTarget, settings, built.envPreview);
     }
 
+    const hookWarning = formatHookWarningSuffix(hooksResult);
     workflowState = {
       kind: 'login',
       phase: 'done',
@@ -639,7 +656,7 @@ async function startLoginFlow(input: LoginStartInput): Promise<void> {
       authMode: input.authMode,
       restartAfterLogin: input.restartAfterLogin,
       message: input.restartAfterLogin
-        ? `「${latestTarget.nickname}」${latestTarget.emailHint ? ` (${latestTarget.emailHint})` : ''} 已完成 ACP 登录，并以隔离环境重启 Antigravity（后续切换免重登）`
+        ? `「${latestTarget.nickname}」${latestTarget.emailHint ? ` (${latestTarget.emailHint})` : ''} 已完成 ACP 登录，并以隔离环境重启 Antigravity（后续切换免重登）${hookWarning}`
         : `「${latestTarget.nickname}」${latestTarget.emailHint ? ` (${latestTarget.emailHint})` : ''} 已完成 ACP 登录并缓存于独立环境，随时可一键免重登切换`,
     };
     broadcastState();
@@ -761,10 +778,12 @@ async function startQuickAddAccount(options?: { restartAfterLogin?: boolean }): 
 
     const latestCreated = store.getAccount(created.id) ?? created;
 
+    let hooksResult: PostRestartHooksResult | undefined;
     if (options?.restartAfterLogin) {
-      await restartAntigravityForAccount(latestCreated, settings, built.envPreview);
+      hooksResult = await restartAntigravityForAccount(latestCreated, settings, built.envPreview);
     }
 
+    const hookWarning = formatHookWarningSuffix(hooksResult);
     workflowState = {
       kind: 'quick_add',
       phase: 'done',
@@ -773,7 +792,7 @@ async function startQuickAddAccount(options?: { restartAfterLogin?: boolean }): 
       restartAfterLogin: Boolean(options?.restartAfterLogin),
       autoCreatedAccount: true,
       message: options?.restartAfterLogin
-        ? `「${latestCreated.nickname}」${latestCreated.emailHint ? ` (${latestCreated.emailHint})` : ''} 已完成 ACP 登录并重启 Antigravity（后续切换免重登）`
+        ? `「${latestCreated.nickname}」${latestCreated.emailHint ? ` (${latestCreated.emailHint})` : ''} 已完成 ACP 登录并重启 Antigravity（后续切换免重登）${hookWarning}`
         : latestCreated.emailHint
           ? `已自动识别邮箱 ${latestCreated.emailHint} 并保存至「${latestCreated.nickname}」独立隔离环境`
           : `「${latestCreated.nickname}」已完成浏览器 ACP 登录并保存至独立隔离环境`,
@@ -901,14 +920,15 @@ async function startSwitchAndRestart(input: SwitchStartInput): Promise<void> {
 
     const latestTarget = store.getAccount(target.id) ?? target;
 
-    await restartAntigravityForAccount(latestTarget, settings, built.envPreview);
+    const hooksResult = await restartAntigravityForAccount(latestTarget, settings, built.envPreview);
+    const hookWarning = formatHookWarningSuffix(hooksResult);
 
     workflowState = {
       kind: 'switch',
       phase: 'done',
       targetAccountId: latestTarget.id,
       authMode,
-      message: `已成功切换到「${latestTarget.nickname}」${latestTarget.emailHint ? ` (${latestTarget.emailHint})` : ''} 并重启 Antigravity`,
+      message: `已成功切换到「${latestTarget.nickname}」${latestTarget.emailHint ? ` (${latestTarget.emailHint})` : ''} 并重启 Antigravity${hookWarning}`,
     };
     broadcastState();
   } catch (err) {
@@ -1151,6 +1171,34 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('app:restartActive', async () => {
     void restartActiveApp();
+  });
+
+  ipcMain.handle('app:runPostRestartHooks', async () => {
+    const settings = store.getSettings();
+    const activeAccount = settings ? store.getAccount(store.getActiveAccountId() ?? '') : undefined;
+    const profileHome = activeAccount
+      ? getProfileHomeDir(activeAccount, settings.profilesRootDir)
+      : undefined;
+
+    let preservedArgs: string[] = [];
+    try {
+      const runningProcs = await findAppProcessPids(settings.antigravityAppPath);
+      preservedArgs = extractPreservedLaunchArgs(runningProcs);
+    } catch {
+      preservedArgs = [];
+    }
+    const launchArgs = mergeLaunchArgs(parseLaunchArgs(settings.extraLaunchArgs), preservedArgs);
+    const result = await runPostRestartCommands(getEffectivePostRestartCommands(settings), {
+      waitForPort: extractRemoteDebuggingPort(launchArgs),
+      hasCdpFlag: hasRemoteDebuggingPortFlag(launchArgs),
+      profileHome,
+      onAudit: recordAudit,
+    });
+    broadcastState();
+    return {
+      snapshot: getSnapshotState(),
+      result,
+    };
   });
 
   ipcMain.handle('acp:submitCode', async (_evt, code: string) => {

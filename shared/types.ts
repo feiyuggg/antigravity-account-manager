@@ -61,6 +61,12 @@ export interface PostRestartCommandItem {
   enabled: boolean;
 }
 
+export interface PostRestartHooksResult {
+  total: number;
+  succeeded: number;
+  failed: Array<{ name: string; detail: string }>;
+}
+
 export interface AppSettings {
   agyPathOverride: string;
   antigravityAppPath: string;
