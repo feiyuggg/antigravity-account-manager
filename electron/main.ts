@@ -50,6 +50,7 @@ import {
   removeIsolatedProfileDir,
 } from './envIsolation';
 import { generateNextAccountDefaults, ProfileStore } from './store';
+import { formatTrayMenuAccountLabel, formatTraySlotBadge } from './trayLabel';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -197,29 +198,34 @@ function isWorkflowRunning(): boolean {
 function updateTray(): void {
   if (!tray) return;
   const data = store.getState();
-  const active = data.accounts.find((a) => a.id === data.activeAccountId);
+  const activeIdx = data.activeAccountId
+    ? data.accounts.findIndex((a) => a.id === data.activeAccountId)
+    : -1;
+  const active = activeIdx >= 0 ? data.accounts[activeIdx] : undefined;
+  const activeSlotIndex = activeIdx >= 0 ? activeIdx + 1 : null;
+
+  tray.setToolTip(
+    active
+      ? `Antigravity Account Manager · ${active.nickname}${active.emailHint && active.emailHint !== active.nickname ? ` (${active.emailHint})` : ''}`
+      : 'Antigravity Account Manager',
+  );
 
   if (data.settings.showTrayAccount) {
-    if (active) {
-      tray.setTitle(` ${active.nickname}`);
-    } else {
-      tray.setTitle(' AGY');
-    }
+    tray.setTitle(formatTraySlotBadge(activeSlotIndex), { fontType: 'monospaced' });
   } else {
     tray.setTitle('');
   }
 
   const menuItems: Electron.MenuItemConstructorOptions[] = [
     {
-      label: active
-        ? `当前激活槽位: ${active.nickname}${active.emailHint ? ` (${active.emailHint})` : ''}`
-        : '当前未指定激活槽位',
+      label:
+        active && activeSlotIndex
+          ? `当前：${formatTrayMenuAccountLabel(active.nickname, activeSlotIndex, active.emailHint)}`
+          : '当前：未激活账号',
       enabled: false,
     },
     {
-      label: appStatus?.running
-        ? `Antigravity 运行中 (PID: ${appStatus.pids.slice(0, 2).join(', ')})`
-        : 'Antigravity 未运行',
+      label: appStatus?.running ? 'Antigravity 运行中' : 'Antigravity 未运行',
       enabled: false,
     },
     { type: 'separator' },
@@ -227,12 +233,12 @@ function updateTray(): void {
 
   if (data.accounts.length > 0) {
     menuItems.push({
-      label: '一键切换账号并重启 Antigravity',
-      submenu: data.accounts.map((acc) => {
+      label: '切换账号',
+      submenu: data.accounts.map((acc, idx) => {
         const status = sessionStatuses[acc.id];
-        const readyTag = status?.authenticated ? '✓ 已就绪' : '○ 需登录';
+        const readyTag = status?.authenticated ? '✓' : '○';
         return {
-          label: `${acc.id === data.activeAccountId ? '● ' : '   '}${acc.nickname} [${readyTag}]`,
+          label: `${acc.id === data.activeAccountId ? '● ' : '   '}#${idx + 1} ${acc.nickname}  ${readyTag}`,
           enabled: !isWorkflowRunning(),
           click: () => {
             showMainWindow();
@@ -250,7 +256,7 @@ function updateTray(): void {
 
   menuItems.push(
     {
-      label: '➕ 一键添加账号（跳转浏览器 ACP 认证）',
+      label: '添加账号（浏览器 ACP 认证）',
       enabled: !isWorkflowRunning(),
       click: () => {
         showMainWindow();
@@ -258,7 +264,7 @@ function updateTray(): void {
       },
     },
     {
-      label: isRefreshing ? '正在检测 ACP 状态...' : '刷新所有槽位 ACP 状态',
+      label: isRefreshing ? '正在刷新状态...' : '刷新状态',
       enabled: !isRefreshing && !isWorkflowRunning(),
       click: () => {
         void refreshAll();
@@ -266,11 +272,20 @@ function updateTray(): void {
     },
     { type: 'separator' },
     {
+      label: '状态栏显示槽位编号 (#1/#2)',
+      type: 'checkbox',
+      checked: data.settings.showTrayAccount,
+      click: (item) => {
+        store.updateSettings({ showTrayAccount: item.checked });
+        broadcastState();
+      },
+    },
+    {
       label: '打开主面板',
       click: () => showMainWindow(),
     },
     {
-      label: '退出 Antigravity Account Manager',
+      label: '退出',
       click: () => app.quit(),
     },
   );

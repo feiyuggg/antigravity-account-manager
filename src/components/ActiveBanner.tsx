@@ -17,6 +17,14 @@ interface ActiveBannerProps {
   onQuickCreateSystemSlot: () => void;
 }
 
+function formatCompactHomePath(profileHome: string): string {
+  const compactHome = profileHome.replace(/^\/Users\/[^/]+/, '~');
+  return compactHome.replace(
+    /\/([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    '/$1…',
+  );
+}
+
 export function ActiveBanner({
   runtimeInfo,
   appStatus,
@@ -69,11 +77,16 @@ export function ActiveBanner({
               )}
             </h2>
             <div className="hero-sub">
-              {activeAccount?.emailHint && <span>{activeAccount.emailHint}</span>}
+              {activeAccount?.emailHint && activeAccount.emailHint !== activeAccount.nickname && (
+                <span>{activeAccount.emailHint}</span>
+              )}
               {activeSession?.profileHome && (
-                <span className="mono" title="当前槽位注入给 Antigravity 的 HOME 与 CFFIXED_USER_HOME">
+                <span
+                  className="mono"
+                  title={`当前槽位注入给 Antigravity 的 HOME 与 CFFIXED_USER_HOME：${activeSession.profileHome}`}
+                >
                   <FolderCog size={11} style={{ verticalAlign: '-1px', marginRight: 4 }} />
-                  HOME={activeSession.profileHome}
+                  HOME={formatCompactHomePath(activeSession.profileHome)}
                 </span>
               )}
               {!activeAccount && (

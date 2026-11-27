@@ -399,8 +399,10 @@ export function SettingsView({
 
         <div className="card setting-row">
           <div className="setting-info">
-            <div className="setting-title">macOS 菜单栏显示当前激活槽位</div>
-            <div className="setting-desc">在顶部菜单栏图标旁展示当前激活的账号槽位名称，方便随时点击切换。</div>
+            <div className="setting-title">macOS 状态栏显示槽位编号 (#1/#2)</div>
+            <div className="setting-desc">
+              默认仅显示简洁图标以减少遮挡；开启后在图标旁显示固定宽度槽位编号（如 #1、#2）。
+            </div>
           </div>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
             <input
