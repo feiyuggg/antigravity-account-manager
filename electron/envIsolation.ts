@@ -39,14 +39,162 @@ const ANTIGRAVITY_SHARED_DATA_DIRS = [
   'annotations',
   'scratch',
   'knowledge',
+  'chapter_titles',
 ];
 
-const DERIVED_SUMMARY_CACHE_FILES = [
-  'conversation_summaries.db',
-  'conversation_summaries.db-shm',
-  'conversation_summaries.db-wal',
-  'agyhub_summaries_proto.pb',
+function sqlQuoteString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function isSymlinkToTarget(linkPath: string, expectedTarget: string): boolean {
+  try {
+    const stat = fs.lstatSync(linkPath);
+    return stat.isSymbolicLink() && fs.readlinkSync(linkPath) === expectedTarget;
+  } catch {
+    return false;
+  }
+}
+
+function unlinkIfSymlink(filePath: string): void {
+  try {
+    if (fs.lstatSync(filePath).isSymbolicLink()) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+const CONVERSATION_SUMMARY_COLUMNS = [
+  'conversation_id',
+  'title',
+  'preview',
+  'step_count',
+  'last_modified_time',
+  'workspace_uris',
+  'status',
+  'source',
+  'project_id',
+  'agent_name',
+  'parent_conversation_id',
+  'nesting_depth',
+  'battle_id',
+  'winning_conversation_id',
+  'not_fully_idle',
+  'killed',
+  'last_user_input_time',
+  'last_user_input_step_index',
+  'app_data_dir',
+  'raw_summary',
+  'group_id',
 ];
+
+/**
+ * Merge any unshared conversation summary rows from an isolated slot's `conversation_summaries.db`
+ * back into `realAntigravityDir`, then symlink `conversation_summaries.db` and `agyhub_summaries_proto.pb`
+ * so every account slot immediately sees the complete shared conversation history list.
+ */
+async function mergeAndLinkConversationSummaries(
+  realAntigravityDir: string,
+  profileAntigravityDir: string,
+  deferIfSlotInUse = false,
+): Promise<void> {
+  const realDb = path.join(realAntigravityDir, 'conversation_summaries.db');
+  const profileDb = path.join(profileAntigravityDir, 'conversation_summaries.db');
+  const realProto = path.join(realAntigravityDir, 'agyhub_summaries_proto.pb');
+  const profileProto = path.join(profileAntigravityDir, 'agyhub_summaries_proto.pb');
+
+  if (!deferIfSlotInUse) {
+    let profileDbStat: fs.Stats | null = null;
+    try {
+      profileDbStat = fs.lstatSync(profileDb);
+    } catch {
+      profileDbStat = null;
+    }
+
+    if (!fs.existsSync(realDb) && profileDbStat && profileDbStat.isFile()) {
+      fs.mkdirSync(realAntigravityDir, { recursive: true });
+      fs.copyFileSync(profileDb, realDb);
+      for (const sidecar of ['-wal', '-shm']) {
+        if (fs.existsSync(`${profileDb}${sidecar}`)) {
+          fs.copyFileSync(`${profileDb}${sidecar}`, `${realDb}${sidecar}`);
+        }
+      }
+    }
+
+    if (fs.existsSync(realDb)) {
+      let mergedOrReadyToLink = true;
+
+      if (profileDbStat && !profileDbStat.isSymbolicLink() && profileDbStat.isFile()) {
+        const colList = CONVERSATION_SUMMARY_COLUMNS.join(', ');
+        const sql = [
+          'PRAGMA busy_timeout = 3000;',
+          `ATTACH DATABASE ${sqlQuoteString(profileDb)} AS slot;`,
+          `INSERT INTO main.conversation_summaries (${colList})`,
+          `SELECT ${colList} FROM slot.conversation_summaries WHERE 1`,
+          'ON CONFLICT(conversation_id) DO UPDATE SET',
+          '  title = COALESCE(NULLIF(excluded.title, \'\'), main.conversation_summaries.title),',
+          '  preview = COALESCE(NULLIF(excluded.preview, \'\'), main.conversation_summaries.preview),',
+          '  step_count = MAX(excluded.step_count, main.conversation_summaries.step_count),',
+          '  last_modified_time = excluded.last_modified_time,',
+          '  workspace_uris = COALESCE(NULLIF(excluded.workspace_uris, \'\'), main.conversation_summaries.workspace_uris),',
+          '  status = excluded.status,',
+          '  source = COALESCE(NULLIF(excluded.source, \'\'), main.conversation_summaries.source),',
+          '  project_id = COALESCE(NULLIF(excluded.project_id, \'\'), main.conversation_summaries.project_id),',
+          '  agent_name = COALESCE(NULLIF(excluded.agent_name, \'\'), main.conversation_summaries.agent_name),',
+          '  parent_conversation_id = COALESCE(NULLIF(excluded.parent_conversation_id, \'\'), main.conversation_summaries.parent_conversation_id),',
+          '  nesting_depth = excluded.nesting_depth,',
+          '  battle_id = COALESCE(NULLIF(excluded.battle_id, \'\'), main.conversation_summaries.battle_id),',
+          '  winning_conversation_id = COALESCE(NULLIF(excluded.winning_conversation_id, \'\'), main.conversation_summaries.winning_conversation_id),',
+          '  not_fully_idle = excluded.not_fully_idle,',
+          '  killed = excluded.killed,',
+          '  last_user_input_time = excluded.last_user_input_time,',
+          '  last_user_input_step_index = excluded.last_user_input_step_index,',
+          '  app_data_dir = COALESCE(NULLIF(excluded.app_data_dir, \'\'), main.conversation_summaries.app_data_dir),',
+          '  raw_summary = COALESCE(excluded.raw_summary, main.conversation_summaries.raw_summary),',
+          '  group_id = COALESCE(NULLIF(excluded.group_id, \'\'), main.conversation_summaries.group_id)',
+          'WHERE excluded.last_modified_time > main.conversation_summaries.last_modified_time;',
+          'INSERT OR IGNORE INTO main.conversation_parents (conversation_id, parent_id) SELECT conversation_id, parent_id FROM slot.conversation_parents;',
+          'DETACH DATABASE slot;',
+          'PRAGMA wal_checkpoint(TRUNCATE);',
+        ].join('\n');
+
+        try {
+          await execFileAsync('/usr/bin/sqlite3', [realDb, sql], {
+            env: buildBaseEnv(),
+            timeout: 10000,
+          });
+        } catch {
+          mergedOrReadyToLink = false;
+        }
+      } else if (profileDbStat && isSymlinkToTarget(profileDb, realDb)) {
+        if (fs.existsSync(`${profileDb}-wal`)) {
+          try {
+            await execFileAsync(
+              '/usr/bin/sqlite3',
+              [realDb, 'PRAGMA busy_timeout=1500; PRAGMA wal_checkpoint(TRUNCATE);'],
+              { env: buildBaseEnv(), timeout: 5000 },
+            );
+          } catch {
+            // ignore busy checkpoint
+          }
+        }
+      }
+
+      if (mergedOrReadyToLink && !isSymlinkToTarget(profileDb, realDb)) {
+        for (const f of ['conversation_summaries.db', 'conversation_summaries.db-wal', 'conversation_summaries.db-shm']) {
+          fs.rmSync(path.join(profileAntigravityDir, f), { force: true });
+        }
+        fs.symlinkSync(realDb, profileDb);
+      }
+    }
+
+    if (fs.existsSync(realProto) && !isSymlinkToTarget(profileProto, realProto)) {
+      fs.rmSync(profileProto, { force: true });
+      fs.symlinkSync(realProto, profileProto);
+    }
+  }
+}
 
 export function getDefaultProfilesRootDir(realHome = os.homedir()): string {
   return path.join(realHome, '.antigravity-accounts', 'profiles');
@@ -275,6 +423,7 @@ export async function ensureIsolatedProfileReady(
     shareConversationsAndProjects?: boolean;
     shareGlobalCustomizations: boolean;
     symlinkShellConfig: boolean;
+    isProfileInUse?: boolean;
     onAudit?: AuditSink;
   },
 ): Promise<BuiltProfileEnv> {
@@ -338,37 +487,26 @@ export async function ensureIsolatedProfileReady(
         path.join(geminiConfigDir, 'mcp_config.json'),
       );
 
-      let conversationsMigrated = false;
       for (const dirName of ANTIGRAVITY_SHARED_DATA_DIRS) {
-        const migrated = linkSharedDirWithMerge(
+        linkSharedDirWithMerge(
           path.join(realHome, '.gemini', 'antigravity', dirName),
           path.join(antigravityDataDir, dirName),
         );
-        if (dirName === 'conversations' && migrated) {
-          conversationsMigrated = true;
-        }
       }
 
-      // Only clear derived summary cache inside THIS profile directory so Antigravity
-      // rebuilds its conversation index from the newly linked shared `conversations/`.
-      if (conversationsMigrated) {
-        for (const cacheFile of DERIVED_SUMMARY_CACHE_FILES) {
-          fs.rmSync(path.join(antigravityDataDir, cacheFile), { force: true });
-        }
-      }
+      await mergeAndLinkConversationSummaries(
+        path.join(realHome, '.gemini', 'antigravity'),
+        antigravityDataDir,
+        Boolean(options.isProfileInUse),
+      );
     } else {
       unlinkSharedDirIfSymlink(path.join(geminiConfigDir, 'projects'));
-      try {
-        const mcpLink = path.join(geminiConfigDir, 'mcp_config.json');
-        if (fs.lstatSync(mcpLink).isSymbolicLink()) {
-          fs.unlinkSync(mcpLink);
-        }
-      } catch {
-        // ignore
-      }
+      unlinkIfSymlink(path.join(geminiConfigDir, 'mcp_config.json'));
       for (const dirName of ANTIGRAVITY_SHARED_DATA_DIRS) {
         unlinkSharedDirIfSymlink(path.join(antigravityDataDir, dirName));
       }
+      unlinkIfSymlink(path.join(antigravityDataDir, 'conversation_summaries.db'));
+      unlinkIfSymlink(path.join(antigravityDataDir, 'agyhub_summaries_proto.pb'));
     }
 
     // Initialize an isolated macOS login.keychain-db strictly within this profile's HOME + CFFIXED_USER_HOME

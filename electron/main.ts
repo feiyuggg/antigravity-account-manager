@@ -219,6 +219,30 @@ function isWorkflowRunning(): boolean {
   );
 }
 
+function enrichAppStatusWithAccount(status: AntigravityAppStatus): AntigravityAppStatus {
+  if (!status.running || !status.runningProfileHome) {
+    return { ...status, runningAccountId: null };
+  }
+  const settings = store.getSettings();
+  const matched = store.listAccounts().find(
+    (acc) => getProfileHomeDir(acc, settings.profilesRootDir) === status.runningProfileHome,
+  );
+  return {
+    ...status,
+    runningAccountId: matched?.id ?? null,
+  };
+}
+
+function isAccountCurrentlyRunning(
+  account: Pick<AccountProfile, 'id' | 'isolationMode'>,
+  profilesRootDir: string,
+): boolean {
+  if (!appStatus?.running || !appStatus.runningProfileHome) {
+    return false;
+  }
+  return getProfileHomeDir(account, profilesRootDir) === appStatus.runningProfileHome;
+}
+
 function updateTray(): void {
   if (!tray) return;
   const data = store.getState();
@@ -337,6 +361,7 @@ async function probeAccountInternal(
           shareConversationsAndProjects: settings.shareConversationsAndProjects,
           shareGlobalCustomizations: settings.shareGlobalCustomizations,
           symlinkShellConfig: settings.symlinkShellConfig,
+          isProfileInUse: isAccountCurrentlyRunning(account, settings.profilesRootDir),
           onAudit: recordAudit,
         })
       : buildProfileEnv(account, { profilesRootDir: settings.profilesRootDir });
@@ -404,7 +429,7 @@ async function refreshAll(): Promise<AppStateSnapshot> {
     const settings = store.getSettings();
     const agyPath = resolveAgyBinary(settings.agyPathOverride);
     const agyVersion = agyPath ? await getAgyVersion(agyPath) : null;
-    appStatus = await getAntigravityAppStatus(settings.antigravityAppPath);
+    appStatus = enrichAppStatusWithAccount(await getAntigravityAppStatus(settings.antigravityAppPath));
 
     runtimeInfo = {
       agyPath,
@@ -438,7 +463,7 @@ async function probeSingleAccount(accountId: string): Promise<AppStateSnapshot> 
   if (!account) {
     throw new Error('目标账号槽位不存在');
   }
-  appStatus = await getAntigravityAppStatus(settings.antigravityAppPath);
+  appStatus = enrichAppStatusWithAccount(await getAntigravityAppStatus(settings.antigravityAppPath));
   if (!agyPath) {
     throw new Error('未找到官方 agy CLI 可执行文件');
   }
@@ -581,6 +606,18 @@ async function restartAntigravityForAccount(
   broadcastState();
 
   await quitAppGracefully(settings.antigravityAppPath, { onAudit: recordAudit });
+  appStatus = enrichAppStatusWithAccount(await getAntigravityAppStatus(settings.antigravityAppPath));
+
+  if (target.isolationMode === 'isolated') {
+    await ensureIsolatedProfileReady(target, {
+      profilesRootDir: settings.profilesRootDir,
+      shareConversationsAndProjects: settings.shareConversationsAndProjects,
+      shareGlobalCustomizations: settings.shareGlobalCustomizations,
+      symlinkShellConfig: settings.symlinkShellConfig,
+      isProfileInUse: false,
+      onAudit: recordAudit,
+    });
+  }
 
   workflowState = {
     ...workflowState,
@@ -596,7 +633,7 @@ async function restartAntigravityForAccount(
   });
 
   store.setActiveAccount(target.id);
-  appStatus = await getAntigravityAppStatus(settings.antigravityAppPath);
+  appStatus = enrichAppStatusWithAccount(await getAntigravityAppStatus(settings.antigravityAppPath));
 
   const hasCdpFlag = hasRemoteDebuggingPortFlag(launchArgs);
   const effectiveCommands = getEffectivePostRestartCommands(settings);
@@ -663,6 +700,7 @@ async function startLoginFlow(input: LoginStartInput): Promise<void> {
       shareConversationsAndProjects: settings.shareConversationsAndProjects,
       shareGlobalCustomizations: settings.shareGlobalCustomizations,
       symlinkShellConfig: settings.symlinkShellConfig,
+      isProfileInUse: isAccountCurrentlyRunning(target, settings.profilesRootDir),
       onAudit: recordAudit,
     });
 
@@ -931,6 +969,7 @@ async function startSwitchAndRestart(input: SwitchStartInput): Promise<void> {
       shareConversationsAndProjects: settings.shareConversationsAndProjects,
       shareGlobalCustomizations: settings.shareGlobalCustomizations,
       symlinkShellConfig: settings.symlinkShellConfig,
+      isProfileInUse: isAccountCurrentlyRunning(target, settings.profilesRootDir),
       onAudit: recordAudit,
     });
 
@@ -1366,6 +1405,15 @@ function registerIpcHandlers(): void {
     void restartActiveApp();
   });
 
+  ipcMain.handle('app:syncActiveToRunning', () => {
+    const runningId = appStatus?.runningAccountId;
+    if (runningId && store.getAccount(runningId)) {
+      store.setActiveAccount(runningId);
+      broadcastState();
+    }
+    return getSnapshotState();
+  });
+
   ipcMain.handle('app:runPostRestartHooks', async () => {
     const settings = store.getSettings();
     const activeAccount = settings ? store.getAccount(store.getActiveAccountId() ?? '') : undefined;
@@ -1450,6 +1498,7 @@ function registerIpcHandlers(): void {
             shareConversationsAndProjects: updated.shareConversationsAndProjects,
             shareGlobalCustomizations: updated.shareGlobalCustomizations,
             symlinkShellConfig: updated.symlinkShellConfig,
+            isProfileInUse: isAccountCurrentlyRunning(acc, updated.profilesRootDir),
             onAudit: recordAudit,
           });
         }
@@ -1496,6 +1545,84 @@ function registerIpcHandlers(): void {
   });
 }
 
+function startAppLifecycleMonitor(): void {
+  let polling = false;
+  let lastObservedRunning: boolean | null = null;
+  const handledMismatchRootPids = new Set<number>();
+
+  setInterval(() => {
+    if (polling) return;
+    polling = true;
+    void (async () => {
+      try {
+        const settings = store.getSettings();
+        const next = enrichAppStatusWithAccount(
+          await getAntigravityAppStatus(settings.antigravityAppPath),
+        );
+
+        const prev = appStatus;
+        const changed =
+          !prev ||
+          prev.running !== next.running ||
+          prev.runningAccountId !== next.runningAccountId ||
+          prev.runningProfileHome !== next.runningProfileHome ||
+          (prev.rootPids ?? []).join(',') !== (next.rootPids ?? []).join(',') ||
+          prev.pids.length !== next.pids.length;
+
+        if (!next.running) {
+          handledMismatchRootPids.clear();
+        }
+
+        if (changed) {
+          appStatus = next;
+          broadcastState();
+        }
+
+        if (
+          lastObservedRunning !== null &&
+          next.running &&
+          settings.autoRestoreActiveAccount &&
+          !isWorkflowRunning() &&
+          !isRefreshing
+        ) {
+          const activeAccount = store.getAccount(store.getActiveAccountId() ?? '');
+          if (
+            activeAccount?.isolationMode === 'isolated' &&
+            sessionStatuses[activeAccount.id]?.authenticated === true &&
+            next.runningProfileHome
+          ) {
+            const expectedHome = getProfileHomeDir(activeAccount, settings.profilesRootDir);
+            if (next.runningProfileHome !== expectedHome) {
+              const rootPids = next.rootPids ?? [];
+              const freshRootPids = rootPids.filter((pid) => !handledMismatchRootPids.has(pid));
+              if (freshRootPids.length > 0) {
+                for (const pid of rootPids) {
+                  handledMismatchRootPids.add(pid);
+                }
+                recordAudit({
+                  id: crypto.randomUUID(),
+                  timestamp: new Date().toISOString(),
+                  source: 'APP_LIFECYCLE',
+                  operation: 'auto-restore active slot',
+                  status: 'ok',
+                  detail: `detected=${next.runningProfileHome} -> restoring ${activeAccount.nickname}`,
+                });
+                void startSwitchAndRestart({ accountId: activeAccount.id });
+              }
+            }
+          }
+        }
+
+        lastObservedRunning = next.running;
+      } catch {
+        // ignore transient monitor polling errors
+      } finally {
+        polling = false;
+      }
+    })();
+  }, 3000);
+}
+
 app.whenReady().then(() => {
   updateState = {
     phase: 'idle',
@@ -1531,6 +1658,7 @@ app.whenReady().then(() => {
 
   if (process.env.ACP_MANAGER_SMOKE_TEST !== '1') {
     void refreshAll();
+    startAppLifecycleMonitor();
   }
 
   app.on('activate', () => {

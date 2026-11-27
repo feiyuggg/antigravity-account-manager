@@ -52,19 +52,62 @@ describe('Environment isolation & keychain separation', () => {
         isolationMode: 'isolated' as const,
       };
 
-      // Simulate an older isolated slot that already has its own conversation & stale cache
+      // Simulate an real conversation_summaries.db in fakeRealHome AND a stale unshared one in slot-alpha
+      const realAntigravityDir = path.join(fakeRealHome, '.gemini', 'antigravity');
+      const realDbPath = path.join(realAntigravityDir, 'conversation_summaries.db');
       const preSlotAntigravityDir = path.join(profilesRoot, 'slot-alpha', '.gemini', 'antigravity');
+      const slotDbPath = path.join(preSlotAntigravityDir, 'conversation_summaries.db');
       fs.mkdirSync(path.join(preSlotAntigravityDir, 'conversations'), { recursive: true });
       fs.writeFileSync(
         path.join(preSlotAntigravityDir, 'conversations', 'slot-only.db'),
         'slot-convo',
         'utf8',
       );
-      fs.writeFileSync(
-        path.join(preSlotAntigravityDir, 'conversation_summaries.db'),
-        'stale-cache',
-        'utf8',
-      );
+      fs.writeFileSync(path.join(realAntigravityDir, 'agyhub_summaries_proto.pb'), 'proto-v1', 'utf8');
+
+      const schemaSql = `
+        CREATE TABLE conversation_summaries (
+          conversation_id TEXT PRIMARY KEY,
+          title TEXT NOT NULL DEFAULT "",
+          preview TEXT NOT NULL DEFAULT "",
+          step_count INTEGER NOT NULL DEFAULT 0,
+          last_modified_time DATETIME NOT NULL,
+          workspace_uris TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT "",
+          source TEXT NOT NULL DEFAULT "",
+          project_id TEXT NOT NULL DEFAULT "",
+          agent_name TEXT NOT NULL DEFAULT "",
+          parent_conversation_id TEXT NOT NULL DEFAULT "",
+          nesting_depth INTEGER NOT NULL DEFAULT 0,
+          battle_id TEXT NOT NULL DEFAULT "",
+          winning_conversation_id TEXT NOT NULL DEFAULT "",
+          not_fully_idle NUMERIC NOT NULL DEFAULT false,
+          killed NUMERIC NOT NULL DEFAULT false,
+          last_user_input_time DATETIME NOT NULL,
+          last_user_input_step_index INTEGER NOT NULL DEFAULT -1,
+          app_data_dir TEXT NOT NULL DEFAULT "",
+          raw_summary BLOB,
+          group_id TEXT NOT NULL DEFAULT ""
+        );
+        CREATE TABLE conversation_parents (
+          conversation_id TEXT PRIMARY KEY,
+          parent_id TEXT NOT NULL
+        ) WITHOUT ROWID;
+      `;
+      execFileSync('/usr/bin/sqlite3', [
+        realDbPath,
+        `${schemaSql}
+        INSERT INTO conversation_summaries (conversation_id, title, step_count, last_modified_time, workspace_uris, last_user_input_time, app_data_dir)
+        VALUES ('c1', 'Old Title', 2, '2026-11-26T10:00:00Z', '[]', '2026-11-26T10:00:00Z', 'antigravity'),
+               ('c2', 'Real Only', 4, '2026-11-26T11:00:00Z', '[]', '2026-11-26T11:00:00Z', 'antigravity');`,
+      ]);
+      execFileSync('/usr/bin/sqlite3', [
+        slotDbPath,
+        `${schemaSql}
+        INSERT INTO conversation_summaries (conversation_id, title, step_count, last_modified_time, workspace_uris, last_user_input_time, app_data_dir)
+        VALUES ('c1', 'Newer Slot Title', 8, '2026-11-27T12:00:00Z', '[]', '2026-11-27T12:00:00Z', 'antigravity'),
+               ('c3', 'Slot Only', 3, '2026-11-27T13:00:00Z', '[]', '2026-11-27T13:00:00Z', 'antigravity');`,
+      ]);
 
       const built = await ensureIsolatedProfileReady(account, {
         profilesRootDir: profilesRoot,
@@ -113,15 +156,59 @@ describe('Environment isolation & keychain separation', () => {
           .isSymbolicLink(),
       ).toBe(true);
 
-      // Both real-only.db and migrated slot-only.db exist in fakeRealHome, and stale profile cache was cleared
+      // Both real-only.db and migrated slot-only.db exist in fakeRealHome,
+      // and conversation_summaries.db + agyhub_summaries_proto.pb are merged and symlinked
       const realConvosDir = path.join(fakeRealHome, '.gemini', 'antigravity', 'conversations');
       expect(fs.existsSync(path.join(realConvosDir, 'real-only.db'))).toBe(true);
       expect(fs.existsSync(path.join(realConvosDir, 'slot-only.db'))).toBe(true);
+      const slotDbLink = path.join(
+        built.profileHome,
+        '.gemini',
+        'antigravity',
+        'conversation_summaries.db',
+      );
+      expect(fs.lstatSync(slotDbLink).isSymbolicLink()).toBe(true);
       expect(
-        fs.existsSync(
-          path.join(built.profileHome, '.gemini', 'antigravity', 'conversation_summaries.db'),
-        ),
-      ).toBe(false);
+        fs
+          .lstatSync(path.join(built.profileHome, '.gemini', 'antigravity', 'agyhub_summaries_proto.pb'))
+          .isSymbolicLink(),
+      ).toBe(true);
+
+      const mergedRows = execFileSync(
+        '/usr/bin/sqlite3',
+        [realDbPath, 'SELECT conversation_id, title FROM conversation_summaries ORDER BY conversation_id;'],
+        { encoding: 'utf8' },
+      );
+      expect(mergedRows.trim().split(/\r?\n/)).toEqual([
+        'c1|Newer Slot Title',
+        'c2|Real Only',
+        'c3|Slot Only',
+      ]);
+
+      // A brand-new second slot immediately inherits all merged conversations via symlink
+      const betaBuilt = await ensureIsolatedProfileReady(
+        { id: 'slot-beta', nickname: 'Beta 槽位', isolationMode: 'isolated' },
+        {
+          profilesRootDir: profilesRoot,
+          realHome: fakeRealHome,
+          shareConversationsAndProjects: true,
+          shareGlobalCustomizations: true,
+          symlinkShellConfig: true,
+        },
+      );
+      const betaDbLink = path.join(
+        betaBuilt.profileHome,
+        '.gemini',
+        'antigravity',
+        'conversation_summaries.db',
+      );
+      expect(fs.lstatSync(betaDbLink).isSymbolicLink()).toBe(true);
+      const betaRows = execFileSync(
+        '/usr/bin/sqlite3',
+        [betaDbLink, 'SELECT count(*) FROM conversation_summaries;'],
+        { encoding: 'utf8' },
+      ).trim();
+      expect(betaRows).toBe('3');
 
       // Toggling shareConversationsAndProjects to false unlinks cleanly without harming fakeRealHome
       await ensureIsolatedProfileReady(account, {

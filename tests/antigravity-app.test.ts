@@ -7,6 +7,7 @@ import type { AuditEntry } from '../shared/types';
 import {
   buildHookShellCommand,
   extractPreservedLaunchArgs,
+  extractProfileHomeFromUserDataDir,
   extractRemoteDebuggingPort,
   getAntigravityAppStatus,
   hasRemoteDebuggingPortFlag,
@@ -104,6 +105,18 @@ describe('App lifecycle: launch-arg preservation, --env + --args relaunch, and p
     expect(zeroPort).toEqual(['--remote-debugging-port=0']);
     expect(hasRemoteDebuggingPortFlag(zeroPort)).toBe(true);
     expect(hasRemoteDebuggingPortFlag(['--remote-debugging-port=58321'])).toBe(true);
+
+    expect(
+      extractProfileHomeFromUserDataDir(
+        '/Users/developer/Library/Application Support/Antigravity',
+      ),
+    ).toBe('/Users/developer');
+    expect(
+      extractProfileHomeFromUserDataDir(
+        '/Users/developer/.antigravity-accounts/profiles/slot-2/Library/Application Support/Antigravity',
+      ),
+    ).toBe('/Users/developer/.antigravity-accounts/profiles/slot-2');
+    expect(extractProfileHomeFromUserDataDir('/tmp/custom-dir')).toBeNull();
   });
 
   it('filters CDP targets and waits until a workbench page appears', async () => {

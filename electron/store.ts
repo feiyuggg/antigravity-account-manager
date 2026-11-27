@@ -53,6 +53,7 @@ export function createDefaultSettings(): AppSettings {
     shareConversationsAndProjects: true,
     shareGlobalCustomizations: true,
     symlinkShellConfig: true,
+    autoRestoreActiveAccount: true,
     showTrayAccount: false,
     theme: 'system',
   };

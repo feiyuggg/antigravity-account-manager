@@ -31,6 +31,9 @@ export interface AntigravityAppStatus {
   exists: boolean;
   running: boolean;
   pids: number[];
+  rootPids?: number[];
+  runningProfileHome?: string | null;
+  runningAccountId?: string | null;
   checkedAt: string;
 }
 
@@ -101,6 +104,7 @@ export interface AppSettings {
   shareConversationsAndProjects: boolean;
   shareGlobalCustomizations: boolean;
   symlinkShellConfig: boolean;
+  autoRestoreActiveAccount: boolean;
   showTrayAccount: boolean;
   theme: 'system' | 'dark' | 'light';
 }

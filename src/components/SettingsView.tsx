@@ -364,6 +364,27 @@ export function SettingsView({
 
         <div className="card setting-row">
           <div className="setting-info">
+            <div className="setting-title">保持已选账号（手动重开 Antigravity 时自动恢复当前槽位）</div>
+            <div className="setting-desc">
+              当本工具在菜单栏运行时，如果你退出后又从程序坞或 Spotlight 手动打开 Antigravity（系统默认会回到原生环境），将自动切回当前激活的隔离槽位并带上启动参数与插件（关闭后仅提示状态不一致）。
+            </div>
+          </div>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.autoRestoreActiveAccount}
+              onChange={(e) =>
+                void onUpdateSettings({ autoRestoreActiveAccount: e.target.checked })
+              }
+            />
+            <span style={{ fontSize: '13px' }}>
+              {settings.autoRestoreActiveAccount ? '已开启' : '已关闭'}
+            </span>
+          </label>
+        </div>
+
+        <div className="card setting-row">
+          <div className="setting-info">
             <div className="setting-title">共享全局 Skills / Plugins / Rules</div>
             <div className="setting-desc">
               将主目录 <code>~/.gemini/config/</code> 下的 <code>skills</code>、<code>plugins</code>、

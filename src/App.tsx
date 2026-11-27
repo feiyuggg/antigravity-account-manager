@@ -50,6 +50,9 @@ export default function App() {
   }
 
   const activeAccount = state.accounts.find((a) => a.id === state.activeAccountId);
+  const runningAccount = state.appStatus?.runningAccountId
+    ? state.accounts.find((a) => a.id === state.appStatus?.runningAccountId)
+    : undefined;
   const activeSession = activeAccount ? state.sessionStatuses[activeAccount.id] : undefined;
   const hasSystemSlot = state.accounts.some((a) => a.isolationMode === 'system');
   const isWorkflowBusy =
@@ -218,10 +221,14 @@ export default function App() {
               runtimeInfo={state.runtimeInfo}
               appStatus={state.appStatus}
               activeAccount={activeAccount}
+              runningAccount={runningAccount}
               activeSession={activeSession}
               accountsCount={state.accounts.length}
               isBusy={isBusy}
               onRestartActive={() => void window.accountManager.restartActiveApp()}
+              onSyncActiveToRunning={() =>
+                void window.accountManager.syncActiveToRunning().then(setState)
+              }
               onQuickCreateSystemSlot={() =>
                 setFormModal({ open: true, defaultIsolationMode: 'system' })
               }
@@ -307,6 +314,10 @@ export default function App() {
                     key={account.id}
                     account={account}
                     isActive={account.id === state.activeAccountId}
+                    isActuallyRunning={
+                      Boolean(state.appStatus?.running) &&
+                      state.appStatus?.runningAccountId === account.id
+                    }
                     session={state.sessionStatuses[account.id]}
                     isBusy={isBusy}
                     onSwitchAndRestart={(acc) =>

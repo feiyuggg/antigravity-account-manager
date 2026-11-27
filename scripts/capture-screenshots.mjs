@@ -71,6 +71,7 @@ function buildDemoSnapshot(overrides = {}) {
     shareConversationsAndProjects: true,
     shareGlobalCustomizations: true,
     symlinkShellConfig: true,
+    autoRestoreActiveAccount: true,
     showTrayAccount: false,
     theme: 'dark',
   };
@@ -271,6 +272,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('acp:loginStart', () => undefined);
   ipcMain.handle('app:switchAndRestart', () => undefined);
   ipcMain.handle('app:restartActive', () => undefined);
+  ipcMain.handle('app:syncActiveToRunning', () => currentState);
   ipcMain.handle('app:runPostRestartHooks', () => ({
     snapshot: currentState,
     result: { total: 2, succeeded: 2, failed: [] },

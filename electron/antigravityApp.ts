@@ -66,15 +66,89 @@ export async function findAppProcessPids(
   return matches;
 }
 
+export function extractProfileHomeFromUserDataDir(userDataDir: string): string | null {
+  const trimmed = userDataDir.trim();
+  if (!trimmed) return null;
+  const suffix = `${path.sep}Library${path.sep}Application Support${path.sep}Antigravity`;
+  if (!trimmed.endsWith(suffix)) {
+    return null;
+  }
+  const homeCandidate = trimmed.slice(0, trimmed.length - suffix.length);
+  if (!homeCandidate) return null;
+  try {
+    return fs.realpathSync(homeCandidate);
+  } catch {
+    return homeCandidate;
+  }
+}
+
+export async function detectRunningProfileHome(
+  appPath: string,
+  rootPids?: number[],
+): Promise<string | null> {
+  let resolvedApp = appPath;
+  try {
+    resolvedApp = fs.realpathSync(appPath);
+  } catch {
+    // keep raw path
+  }
+  const frameworksPrefixes = [
+    path.join(resolvedApp, 'Contents', 'Frameworks') + path.sep,
+    path.join(appPath, 'Contents', 'Frameworks') + path.sep,
+  ];
+
+  const { stdout } = await execFileAsync('/bin/ps', ['-ax', '-o', 'pid=,ppid=,command='], {
+    env: buildBaseEnv(),
+    timeout: 5000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+
+  const rootSet = rootPids && rootPids.length > 0 ? new Set(rootPids) : null;
+  let fallbackMatch: string | null = null;
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const ppid = Number(match[2]);
+    const command = match[3];
+
+    if (!frameworksPrefixes.some((p) => command.includes(p))) continue;
+    const dirMatch = command.match(/--user-data-dir=(.+?)(?=\s+--|$)/);
+    if (!dirMatch) continue;
+    const profileHome = extractProfileHomeFromUserDataDir(dirMatch[1]);
+    if (!profileHome) continue;
+
+    if (!rootSet || rootSet.has(ppid)) {
+      return profileHome;
+    }
+    if (!fallbackMatch) {
+      fallbackMatch = profileHome;
+    }
+  }
+
+  return fallbackMatch;
+}
+
 export async function getAntigravityAppStatus(appPath: string): Promise<AntigravityAppStatus> {
   const exists = fs.existsSync(appPath);
   let pids: number[] = [];
+  let rootPids: number[] = [];
+  let runningProfileHome: string | null = null;
+
   if (exists) {
     try {
       const procs = await findAppProcessPids(appPath);
       pids = procs.map((p) => p.pid);
+      if (pids.length > 0) {
+        rootPids = getMainBundleProcessPids(procs);
+        runningProfileHome = await detectRunningProfileHome(appPath, rootPids);
+      }
     } catch {
       pids = [];
+      rootPids = [];
+      runningProfileHome = null;
     }
   }
   return {
@@ -82,6 +156,8 @@ export async function getAntigravityAppStatus(appPath: string): Promise<Antigrav
     exists,
     running: pids.length > 0,
     pids,
+    rootPids,
+    runningProfileHome,
     checkedAt: new Date().toISOString(),
   };
 }

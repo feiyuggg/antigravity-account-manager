@@ -18,6 +18,7 @@ export interface AccountManagerApi {
   startLogin: (input: LoginStartInput) => Promise<void>;
   startSwitchAndRestart: (input: SwitchStartInput) => Promise<void>;
   restartActiveApp: () => Promise<void>;
+  syncActiveToRunning: () => Promise<AppStateSnapshot>;
   runPostRestartHooks: () => Promise<{ snapshot: AppStateSnapshot; result: PostRestartHooksResult }>;
   checkForUpdates: (options?: { autoInstall?: boolean }) => Promise<AppStateSnapshot>;
   dismissUpdateNotice: () => Promise<AppStateSnapshot>;
@@ -43,6 +44,7 @@ const api: AccountManagerApi = {
   startLogin: (input) => ipcRenderer.invoke('acp:loginStart', input),
   startSwitchAndRestart: (input) => ipcRenderer.invoke('app:switchAndRestart', input),
   restartActiveApp: () => ipcRenderer.invoke('app:restartActive'),
+  syncActiveToRunning: () => ipcRenderer.invoke('app:syncActiveToRunning'),
   runPostRestartHooks: () => ipcRenderer.invoke('app:runPostRestartHooks'),
   checkForUpdates: (options) => ipcRenderer.invoke('app:checkForUpdates', options),
   dismissUpdateNotice: () => ipcRenderer.invoke('app:dismissUpdateNotice'),

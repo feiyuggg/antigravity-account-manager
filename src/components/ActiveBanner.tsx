@@ -10,10 +10,12 @@ interface ActiveBannerProps {
   runtimeInfo: RuntimeInfo | null;
   appStatus: AntigravityAppStatus | null;
   activeAccount?: AccountProfile;
+  runningAccount?: AccountProfile;
   activeSession?: ProfileSessionStatus;
   accountsCount: number;
   isBusy: boolean;
   onRestartActive: () => void;
+  onSyncActiveToRunning: () => void;
   onQuickCreateSystemSlot: () => void;
 }
 
@@ -29,10 +31,12 @@ export function ActiveBanner({
   runtimeInfo,
   appStatus,
   activeAccount,
+  runningAccount,
   activeSession,
   accountsCount,
   isBusy,
   onRestartActive,
+  onSyncActiveToRunning,
   onQuickCreateSystemSlot,
 }: ActiveBannerProps) {
   if (runtimeInfo?.error && !runtimeInfo.agyPath) {
@@ -125,6 +129,44 @@ export function ActiveBanner({
           )}
         </div>
       </div>
+
+      {appStatus?.running &&
+        activeAccount &&
+        appStatus.runningProfileHome &&
+        appStatus.runningAccountId !== activeAccount.id && (
+          <div className="notice-banner warn" style={{ marginTop: '12px' }}>
+            <div>
+              <strong>运行环境与已选槽位不一致：</strong>
+              Antigravity 当前实际以「
+              {runningAccount
+                ? runningAccount.nickname
+                : `未纳管环境 (${formatCompactHomePath(appStatus.runningProfileHome)})`}
+              」运行，并非「{activeAccount.nickname}」（可能是退出后直接从程序坞/Spotlight
+              打开所致）。
+            </div>
+            <div className="action-group">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                disabled={isBusy}
+                onClick={onRestartActive}
+              >
+                <RotateCw size={12} />
+                切回「{activeAccount.nickname}」并重启
+              </button>
+              {runningAccount && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={isBusy}
+                  onClick={onSyncActiveToRunning}
+                >
+                  同步面板为实际运行账号
+                </button>
+              )}
+            </div>
+          </div>
+        )}
     </section>
   );
 }

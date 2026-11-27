@@ -18,6 +18,7 @@ import type { AccountProfile, AuthMode, ProfileSessionStatus } from '../../share
 interface AccountCardProps {
   account: AccountProfile;
   isActive: boolean;
+  isActuallyRunning?: boolean;
   session?: ProfileSessionStatus;
   isBusy: boolean;
   onSwitchAndRestart: (account: AccountProfile) => void;
@@ -44,6 +45,7 @@ function formatDateTime(iso?: string): string {
 export function AccountCard({
   account,
   isActive,
+  isActuallyRunning,
   session,
   isBusy,
   onSwitchAndRestart,
@@ -96,6 +98,9 @@ export function AccountCard({
               <CheckCircle2 size={11} />
               当前激活
             </span>
+          )}
+          {isActuallyRunning && !isActive && (
+            <span className="chip warn">实际运行中</span>
           )}
           <span className={`chip ${authChipClass}`}>{authLabel}</span>
         </div>
