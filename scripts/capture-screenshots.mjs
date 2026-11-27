@@ -229,7 +229,7 @@ function buildDemoSnapshot(overrides = {}) {
     },
     updateState: {
       phase: 'idle',
-      currentVersion: '1.0.2',
+      currentVersion: '1.0.3',
       releaseUrl: 'https://github.com/feiyuggg/antigravity-account-manager/releases',
       message: '',
     },
