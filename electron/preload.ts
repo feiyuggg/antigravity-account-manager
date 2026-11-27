@@ -19,6 +19,8 @@ export interface AccountManagerApi {
   startSwitchAndRestart: (input: SwitchStartInput) => Promise<void>;
   restartActiveApp: () => Promise<void>;
   runPostRestartHooks: () => Promise<{ snapshot: AppStateSnapshot; result: PostRestartHooksResult }>;
+  checkForUpdates: (options?: { autoInstall?: boolean }) => Promise<AppStateSnapshot>;
+  dismissUpdateNotice: () => Promise<AppStateSnapshot>;
   submitAuthCode: (code: string) => Promise<void>;
   cancelWorkflow: () => Promise<void>;
   logoutAccount: (accountId: string) => Promise<AppStateSnapshot>;
@@ -42,6 +44,8 @@ const api: AccountManagerApi = {
   startSwitchAndRestart: (input) => ipcRenderer.invoke('app:switchAndRestart', input),
   restartActiveApp: () => ipcRenderer.invoke('app:restartActive'),
   runPostRestartHooks: () => ipcRenderer.invoke('app:runPostRestartHooks'),
+  checkForUpdates: (options) => ipcRenderer.invoke('app:checkForUpdates', options),
+  dismissUpdateNotice: () => ipcRenderer.invoke('app:dismissUpdateNotice'),
   submitAuthCode: (code) => ipcRenderer.invoke('acp:submitCode', code),
   cancelWorkflow: () => ipcRenderer.invoke('workflow:cancel'),
   logoutAccount: (accountId) => ipcRenderer.invoke('acp:logoutAccount', accountId),

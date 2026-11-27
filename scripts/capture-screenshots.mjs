@@ -226,6 +226,12 @@ function buildDemoSnapshot(overrides = {}) {
       phase: 'idle',
       message: '',
     },
+    updateState: {
+      phase: 'idle',
+      currentVersion: '1.0.2',
+      releaseUrl: 'https://github.com/feiyuggg/antigravity-account-manager/releases',
+      message: '',
+    },
     isRefreshing: false,
     ...overrides,
   };
@@ -269,6 +275,8 @@ app.whenReady().then(async () => {
     snapshot: currentState,
     result: { total: 2, succeeded: 2, failed: [] },
   }));
+  ipcMain.handle('app:checkForUpdates', () => currentState);
+  ipcMain.handle('app:dismissUpdateNotice', () => currentState);
   ipcMain.handle('acp:submitCode', () => undefined);
   ipcMain.handle('workflow:cancel', () => undefined);
   ipcMain.handle('acp:logoutAccount', () => currentState);

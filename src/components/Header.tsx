@@ -1,5 +1,5 @@
-import { RefreshCw, ScrollText, Settings, ShieldCheck, Users } from 'lucide-react';
-import type { AntigravityAppStatus, RuntimeInfo } from '../../shared/types';
+import { ArrowUpCircle, Loader2, RefreshCw, ScrollText, Settings, ShieldCheck, Users } from 'lucide-react';
+import type { AntigravityAppStatus, RuntimeInfo, UpdateState } from '../../shared/types';
 
 export type ActiveTab = 'dashboard' | 'settings' | 'audit';
 
@@ -8,8 +8,10 @@ interface HeaderProps {
   onTabChange: (tab: ActiveTab) => void;
   runtimeInfo: RuntimeInfo | null;
   appStatus: AntigravityAppStatus | null;
+  updateState: UpdateState;
   isRefreshing: boolean;
   onRefresh: () => void;
+  onCheckForUpdates: () => void;
 }
 
 export function Header({
@@ -17,9 +19,27 @@ export function Header({
   onTabChange,
   runtimeInfo,
   appStatus,
+  updateState,
   isRefreshing,
   onRefresh,
+  onCheckForUpdates,
 }: HeaderProps) {
+  const isUpdating =
+    updateState.phase === 'checking' ||
+    updateState.phase === 'downloading' ||
+    updateState.phase === 'verifying' ||
+    updateState.phase === 'installing';
+
+  const updateButtonLabel =
+    updateState.phase === 'checking'
+      ? '检查中'
+      : updateState.phase === 'downloading'
+        ? `下载 ${updateState.progressPercent ?? 0}%`
+        : updateState.phase === 'verifying'
+          ? '校验中'
+          : updateState.phase === 'installing'
+            ? '更新重启中'
+            : '检查更新';
   const dotClass = !runtimeInfo
     ? 'warn'
     : runtimeInfo.error || !runtimeInfo.agyPath
@@ -92,6 +112,20 @@ export function Header({
         >
           <RefreshCw size={13} className={isRefreshing ? 'spin' : ''} />
           {isRefreshing ? '检测中' : '刷新状态'}
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={isUpdating}
+          onClick={onCheckForUpdates}
+          title={`当前版本 v${updateState.currentVersion}，点击检查 GitHub 最新 Release 并自动更新`}
+        >
+          {isUpdating ? (
+            <Loader2 size={13} className="spin" />
+          ) : (
+            <ArrowUpCircle size={13} />
+          )}
+          {updateButtonLabel}
         </button>
       </div>
     </header>

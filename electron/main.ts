@@ -27,6 +27,7 @@ import type {
   ProfileSessionStatus,
   RuntimeInfo,
   SwitchStartInput,
+  UpdateState,
   WorkflowState,
 } from '../shared/types';
 import { getAgyVersion, resolveAgyBinary } from './acp/binary';
@@ -51,6 +52,13 @@ import {
 } from './envIsolation';
 import { generateNextAccountDefaults, ProfileStore } from './store';
 import { formatTrayMenuAccountLabel, formatTraySlotBadge } from './trayLabel';
+import {
+  checkGitHubLatestRelease,
+  launchDetachedApplyScript,
+  prepareAndStageMacUpdate,
+  RELEASES_PAGE_URL,
+  resolveCurrentAppBundlePath,
+} from './updater';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -64,6 +72,12 @@ let isRefreshing = false;
 let workflowState: WorkflowState = {
   kind: 'idle',
   phase: 'idle',
+  message: '',
+};
+let updateState: UpdateState = {
+  phase: 'idle',
+  currentVersion: '1.0.2',
+  releaseUrl: RELEASES_PAGE_URL,
   message: '',
 };
 let activeWorkflowAbort: AbortController | null = null;
@@ -174,8 +188,18 @@ function getSnapshotState(): AppStateSnapshot {
     sessionStatuses: { ...sessionStatuses },
     auditLog: [...auditLog],
     workflowState: { ...workflowState },
+    updateState: { ...updateState },
     isRefreshing,
   };
+}
+
+function isUpdateBusy(): boolean {
+  return (
+    updateState.phase === 'checking' ||
+    updateState.phase === 'downloading' ||
+    updateState.phase === 'verifying' ||
+    updateState.phase === 'installing'
+  );
 }
 
 function broadcastState(): void {
@@ -268,6 +292,14 @@ function updateTray(): void {
       enabled: !isRefreshing && !isWorkflowRunning(),
       click: () => {
         void refreshAll();
+      },
+    },
+    {
+      label: isUpdateBusy() ? '正在检查或更新版本...' : '检查版本更新...',
+      enabled: !isUpdateBusy(),
+      click: () => {
+        showMainWindow();
+        void checkAndAutoUpdate({ autoInstall: true });
       },
     },
     { type: 'separator' },
@@ -982,6 +1014,152 @@ async function restartActiveApp(): Promise<void> {
   await startSwitchAndRestart({ accountId: activeId });
 }
 
+async function checkAndAutoUpdate(options?: {
+  autoInstall?: boolean;
+}): Promise<AppStateSnapshot> {
+  if (isUpdateBusy()) {
+    return getSnapshotState();
+  }
+
+  const currentVersion = app.getVersion();
+  const auditId = crypto.randomUUID();
+  const startedAt = Date.now();
+
+  updateState = {
+    phase: 'checking',
+    currentVersion,
+    releaseUrl: RELEASES_PAGE_URL,
+    message: '正在检查 GitHub 最新版本...',
+  };
+  recordAudit({
+    id: auditId,
+    timestamp: new Date().toISOString(),
+    source: 'APP_LIFECYCLE',
+    operation: 'check github release',
+    status: 'running',
+    detail: `current=v${currentVersion}`,
+  });
+
+  try {
+    const check = await checkGitHubLatestRelease({ currentVersion });
+    const checkedAt = new Date().toISOString();
+
+    if (!check.hasUpdate) {
+      updateState = {
+        phase: 'up_to_date',
+        currentVersion: check.currentVersion,
+        latestVersion: check.latestVersion,
+        releaseUrl: check.releaseUrl,
+        checkedAt,
+        message: `当前已是最新版本 v${check.currentVersion}`,
+      };
+      recordAudit({
+        id: auditId,
+        timestamp: new Date().toISOString(),
+        source: 'APP_LIFECYCLE',
+        operation: 'check github release',
+        status: 'ok',
+        durationMs: Date.now() - startedAt,
+        detail: `up-to-date (v${check.currentVersion})`,
+      });
+      broadcastState();
+      return getSnapshotState();
+    }
+
+    recordAudit({
+      id: auditId,
+      timestamp: new Date().toISOString(),
+      source: 'APP_LIFECYCLE',
+      operation: 'check github release',
+      status: 'ok',
+      durationMs: Date.now() - startedAt,
+      detail: `found v${check.latestVersion} (current=v${check.currentVersion})`,
+    });
+
+    const targetAppPath = resolveCurrentAppBundlePath();
+    if (options?.autoInstall === false || !targetAppPath || !check.zipAsset) {
+      const reasonHint = !targetAppPath
+        ? '当前为开发模式运行，请前往 Releases 页面下载安装包'
+        : !check.zipAsset
+          ? '该版本未包含 macOS .zip 自动更新包，请前往 Releases 页面手动下载'
+          : '点击前往下载或启动更新';
+      updateState = {
+        phase: 'available',
+        currentVersion: check.currentVersion,
+        latestVersion: check.latestVersion,
+        releaseUrl: check.releaseUrl,
+        releaseNotes: check.releaseNotes,
+        assetName: check.zipAsset?.name,
+        checkedAt,
+        message: `发现新版本 v${check.latestVersion}（${reasonHint}）`,
+      };
+      broadcastState();
+      return getSnapshotState();
+    }
+
+    const staged = await prepareAndStageMacUpdate({
+      zipUrl: check.zipAsset.browser_download_url,
+      assetName: check.zipAsset.name,
+      sha256Url: check.sha256Asset?.browser_download_url,
+      targetAppPath,
+      onStage: (phase, message, progressPercent) => {
+        updateState = {
+          phase,
+          currentVersion: check.currentVersion,
+          latestVersion: check.latestVersion,
+          releaseUrl: check.releaseUrl,
+          assetName: check.zipAsset?.name,
+          progressPercent,
+          checkedAt,
+          message,
+        };
+        broadcastState();
+      },
+      onAudit: recordAudit,
+    });
+
+    updateState = {
+      phase: 'installing',
+      currentVersion: check.currentVersion,
+      latestVersion: check.latestVersion,
+      releaseUrl: check.releaseUrl,
+      assetName: check.zipAsset.name,
+      progressPercent: 100,
+      checkedAt,
+      message: `v${check.latestVersion} 下载校验完成，正在自动安装并重启...`,
+    };
+    broadcastState();
+
+    launchDetachedApplyScript(staged.applyScriptPath);
+    setTimeout(() => {
+      app.exit(0);
+    }, 300);
+
+    return getSnapshotState();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    updateState = {
+      phase: 'error',
+      currentVersion,
+      releaseUrl: RELEASES_PAGE_URL,
+      checkedAt: new Date().toISOString(),
+      message: `检查或更新失败：${msg}`,
+      error: msg,
+    };
+    recordAudit({
+      id: auditId,
+      timestamp: new Date().toISOString(),
+      source: 'APP_LIFECYCLE',
+      operation: 'check github release',
+      status: 'error',
+      durationMs: Date.now() - startedAt,
+      detail: msg,
+    });
+    broadcastState();
+    return getSnapshotState();
+  }
+}
+
 async function logoutAccount(accountId: string): Promise<AppStateSnapshot> {
   const target = store.getAccount(accountId);
   if (!target) {
@@ -1216,6 +1394,23 @@ function registerIpcHandlers(): void {
     };
   });
 
+  ipcMain.handle('app:checkForUpdates', async (_evt, options?: { autoInstall?: boolean }) => {
+    return await checkAndAutoUpdate(options);
+  });
+
+  ipcMain.handle('app:dismissUpdateNotice', () => {
+    if (!isUpdateBusy()) {
+      updateState = {
+        phase: 'idle',
+        currentVersion: app.getVersion(),
+        releaseUrl: RELEASES_PAGE_URL,
+        message: '',
+      };
+      broadcastState();
+    }
+    return getSnapshotState();
+  });
+
   ipcMain.handle('acp:submitCode', async (_evt, code: string) => {
     if (!activeTerminalSession) {
       throw new Error('当前没有等待授权码的终端登录会话');
@@ -1302,6 +1497,12 @@ function registerIpcHandlers(): void {
 }
 
 app.whenReady().then(() => {
+  updateState = {
+    phase: 'idle',
+    currentVersion: app.getVersion(),
+    releaseUrl: RELEASES_PAGE_URL,
+    message: '',
+  };
   const userDataDir = app.getPath('userData');
   const storePath = path.join(userDataDir, 'profiles.json');
   if (process.env.ACP_MANAGER_SMOKE_TEST !== '1' && !fs.existsSync(storePath)) {

@@ -1,4 +1,4 @@
-import { FolderOpen, Play, Plus, Trash2 } from 'lucide-react';
+import { ArrowUpCircle, ExternalLink, FolderOpen, Play, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import type {
   AppSettings,
@@ -6,21 +6,28 @@ import type {
   PostRestartCommandItem,
   PostRestartHooksResult,
   RuntimeInfo,
+  UpdateState,
 } from '../../shared/types';
 
 interface SettingsViewProps {
   settings: AppSettings;
   runtimeInfo: RuntimeInfo | null;
+  updateState: UpdateState;
   onUpdateSettings: (partial: Partial<AppSettings>) => Promise<void>;
   onRunPostRestartHooks: () => Promise<PostRestartHooksResult>;
+  onCheckForUpdates: () => void;
+  onOpenExternalUrl: (url: string) => void;
   onOpenProfilesFolder: () => void;
 }
 
 export function SettingsView({
   settings,
   runtimeInfo,
+  updateState,
   onUpdateSettings,
   onRunPostRestartHooks,
+  onCheckForUpdates,
+  onOpenExternalUrl,
   onOpenProfilesFolder,
 }: SettingsViewProps) {
   const [agyInput, setAgyInput] = useState(settings.agyPathOverride);
@@ -433,6 +440,42 @@ export function SettingsView({
             <option value="dark">深色</option>
             <option value="light">浅色</option>
           </select>
+        </div>
+
+        <div className="card setting-row">
+          <div className="setting-info">
+            <div className="setting-title">应用版本与 GitHub 自动更新</div>
+            <div className="setting-desc">
+              当前版本 <span className="mono">v{updateState.currentVersion}</span>
+              {updateState.message ? ` · ${updateState.message}` : '。检查 GitHub Releases 并在检测到新版本后自动下载校验、替换并重启。'}
+            </div>
+          </div>
+          <div className="action-group">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={
+                updateState.phase === 'checking' ||
+                updateState.phase === 'downloading' ||
+                updateState.phase === 'verifying' ||
+                updateState.phase === 'installing'
+              }
+              onClick={onCheckForUpdates}
+            >
+              <ArrowUpCircle size={13} />
+              检查并自动更新
+            </button>
+            {updateState.releaseUrl && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => onOpenExternalUrl(updateState.releaseUrl!)}
+              >
+                <ExternalLink size={13} />
+                查看 Releases
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

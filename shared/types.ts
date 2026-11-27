@@ -67,6 +67,29 @@ export interface PostRestartHooksResult {
   failed: Array<{ name: string; detail: string }>;
 }
 
+export type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'up_to_date'
+  | 'available'
+  | 'downloading'
+  | 'verifying'
+  | 'installing'
+  | 'error';
+
+export interface UpdateState {
+  phase: UpdatePhase;
+  currentVersion: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  releaseNotes?: string;
+  assetName?: string;
+  progressPercent?: number;
+  message: string;
+  checkedAt?: string;
+  error?: string;
+}
+
 export interface AppSettings {
   agyPathOverride: string;
   antigravityAppPath: string;
@@ -118,6 +141,7 @@ export interface AppStateSnapshot {
   sessionStatuses: Record<string, ProfileSessionStatus>;
   auditLog: AuditEntry[];
   workflowState: WorkflowState;
+  updateState: UpdateState;
   isRefreshing: boolean;
 }
 

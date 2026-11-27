@@ -1,4 +1,4 @@
-import { Globe, Plus, ShieldCheck } from 'lucide-react';
+import { ExternalLink, Globe, Plus, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type {
   AccountProfile,
@@ -128,11 +128,90 @@ export default function App() {
         onTabChange={setActiveTab}
         runtimeInfo={state.runtimeInfo}
         appStatus={state.appStatus}
+        updateState={state.updateState}
         isRefreshing={state.isRefreshing}
         onRefresh={() => void window.accountManager.refreshAll().then(setState)}
+        onCheckForUpdates={() =>
+          void window.accountManager.checkForUpdates({ autoInstall: true }).then(setState)
+        }
       />
 
       <main className="main-content">
+        {state.updateState.phase !== 'idle' && (
+          <div className="container" style={{ paddingBottom: 0 }}>
+            <div
+              className={`notice-banner ${
+                state.updateState.phase === 'error'
+                  ? 'warn'
+                  : state.updateState.phase === 'up_to_date'
+                    ? 'good'
+                    : ''
+              }`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '13px', fontWeight: 500 }}>{state.updateState.message}</div>
+                {state.updateState.phase === 'downloading' &&
+                  typeof state.updateState.progressPercent === 'number' && (
+                    <div
+                      style={{
+                        marginTop: '6px',
+                        height: '4px',
+                        borderRadius: '999px',
+                        background: 'rgba(148, 163, 184, 0.2)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${state.updateState.progressPercent}%`,
+                          height: '100%',
+                          background: 'var(--accent)',
+                          transition: 'width 0.15s ease',
+                        }}
+                      />
+                    </div>
+                  )}
+              </div>
+              <div className="action-group">
+                {state.updateState.releaseUrl &&
+                  (state.updateState.phase === 'available' ||
+                    state.updateState.phase === 'error') && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() =>
+                        void window.accountManager.openExternalUrl(state.updateState.releaseUrl!)
+                      }
+                    >
+                      <ExternalLink size={12} />
+                      前往 Releases
+                    </button>
+                  )}
+                {state.updateState.phase !== 'checking' &&
+                  state.updateState.phase !== 'downloading' &&
+                  state.updateState.phase !== 'verifying' &&
+                  state.updateState.phase !== 'installing' && (
+                    <button
+                      type="button"
+                      className="btn icon-btn"
+                      title="关闭提示"
+                      onClick={() =>
+                        void window.accountManager.dismissUpdateNotice().then(setState)
+                      }
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+              </div>
+            </div>
+          </div>
+        )}
         {activeTab === 'dashboard' && (
           <div className="container">
             <ActiveBanner
@@ -260,12 +339,17 @@ export default function App() {
           <SettingsView
             settings={state.settings}
             runtimeInfo={state.runtimeInfo}
+            updateState={state.updateState}
             onUpdateSettings={handleUpdateSettings}
             onRunPostRestartHooks={async () => {
               const res = await window.accountManager.runPostRestartHooks();
               setState(res.snapshot);
               return res.result;
             }}
+            onCheckForUpdates={() =>
+              void window.accountManager.checkForUpdates({ autoInstall: true }).then(setState)
+            }
+            onOpenExternalUrl={(url) => void window.accountManager.openExternalUrl(url)}
             onOpenProfilesFolder={() => void window.accountManager.openProfileInFinder()}
           />
         )}
