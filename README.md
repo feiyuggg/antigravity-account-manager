@@ -2,7 +2,7 @@
 
 <p align="left">
   <a href="https://github.com/feiyuggg/antigravity-account-manager/releases/latest">
-    <img src="https://img.shields.io/badge/release-v1.0.4-blue" alt="Latest Release v1.0.4" />
+    <img src="https://img.shields.io/badge/release-v1.0.5-blue" alt="Latest Release v1.0.5" />
   </a>
   <img src="https://img.shields.io/badge/platform-macOS%20arm64-0f172a" alt="macOS arm64" />
   <img src="https://img.shields.io/badge/auth-official%20agy%20acp-10b981" alt="Official agy acp" />
@@ -33,8 +33,8 @@
   为每个隔离槽位分配独立的 `HOME`、`CFFIXED_USER_HOME`、`XDG_*` 目录以及独立的 `login.keychain-db`。登录凭证相互隔离互不覆盖，切号时只需优雅退出 Antigravity 并以目标环境重启，立即免重登进入对应账号。
 - **纯正 `agy acp` 认证 & 邮箱自动识别**：
   点击「一键添加账号（浏览器认证）」直接通过官方 `agy acp` 拉起 OAuth 流程（同时支持 `agy acp --login` 终端授权码与企业 Cloud OAuth），认证完成后自动探测账号邮箱并生成不重名的友好槽位名。
-- **跨账号保留完整历史会话、项目与全局配置**：
-  自动将主目录的对话数据（`conversations`、`brain`、`annotations`、`scratch`、`chapter_titles`）、历史会话索引库（`conversation_summaries.db`、`agyhub_summaries_proto.pb`）、项目列表（`projects`）、`mcp_config.json` 及全局 `skills` / `plugins` / `rules` 安全汇总并软链接至每个隔离槽位（认证凭据绝不共享），切号或新增账号后历史会话完整可见、无缝续聊。
+- **跨账号保留完整历史会话、项目、插件配置与遥测缓存**：
+  自动将主目录的对话数据（`conversations`、`brain`、`annotations`、`scratch`、`chapter_titles`）、历史会话索引库（`conversation_summaries.db`、`agyhub_summaries_proto.pb`）、项目列表（`projects`）、`mcp_config.json`、全局 `skills` / `plugins` / `rules`，以及插件统计缓存（`sidecar_data/obsidian-prism/telemetry`、`account_ledgers`、`pricing_ledger_v1.json` 等）安全汇总并共享至每个隔离槽位；对要求防符号链接的 `obsidian-prism-*.json` 配置自动采用 `0600` 常规文件同步并保留插件/Sidecar 启用状态（认证凭据绝不共享），切号或新增账号后历史会话、中文界面与用量统计无缝延续。
 - **手动重开防切回 & 真实运行环境检测**：
   实时检测运行中 Antigravity 的 `--user-data-dir`，并在开启「保持已选账号」时，自动拦截并恢复从程序坞 / Spotlight 手动重开导致的默认账号回退；若环境不一致也会在面板直接提醒并提供一键恢复/同步。
 - **GitHub 一键检查更新 & 自动覆盖升级**：
@@ -78,8 +78,8 @@ flowchart LR
 
 前往 [Releases 页面](https://github.com/feiyuggg/antigravity-account-manager/releases) 下载最新安装包：
 
-- `Antigravity-Account-Manager-1.0.4-macOS-arm64.dmg`（推荐，打开后拖入 `Applications`）
-- 或 `Antigravity-Account-Manager-1.0.4-macOS-arm64.zip`
+- `Antigravity-Account-Manager-1.0.5-macOS-arm64.dmg`（推荐，打开后拖入 `Applications`）
+- 或 `Antigravity-Account-Manager-1.0.5-macOS-arm64.zip`
 
 > **首次打开提示处理**：当前 Release 使用本地 ad-hoc 签名（未经 Apple 公证）。若拖入 `/Applications` 后首次打开提示「无法验证开发者」或「已损坏」，请在终端执行一次：
 > ```bash
