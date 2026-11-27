@@ -47,12 +47,18 @@ export function Header({
       : 'good';
 
   const statusText = !runtimeInfo
-    ? '检测中...'
+    ? '检测中'
     : runtimeInfo.error
       ? 'agy 未就绪'
       : appStatus?.running
-        ? 'Antigravity 运行中'
-        : 'Antigravity 未运行';
+        ? '运行中'
+        : '未运行';
+
+  const statusTooltip = !runtimeInfo
+    ? '正在检测 agy CLI 与 Antigravity 运行状态...'
+    : runtimeInfo.error
+      ? runtimeInfo.error
+      : `${appStatus?.running ? 'Antigravity 运行中' : 'Antigravity 未运行'} | agy: ${runtimeInfo.agyPath ?? '未检测到'}`;
 
   return (
     <header className="titlebar">
@@ -65,7 +71,7 @@ export function Header({
           title="仅使用官方 agy acp 认证与独立环境变量隔离，绝不调用额度接口或读取令牌"
         >
           <ShieldCheck size={12} />
-          纯 agy acp · 环境隔离
+          纯 ACP · 隔离
         </span>
       </div>
 
@@ -93,13 +99,13 @@ export function Header({
             onClick={() => onTabChange('audit')}
           >
             <ScrollText size={14} />
-            ACP 审计日志
+            审计日志
           </button>
         </div>
       </div>
 
       <div className="titlebar-right no-drag">
-        <div className="status-pill" title={runtimeInfo?.agyPath ?? '未检测到 agy'}>
+        <div className="status-pill" title={statusTooltip}>
           <span className={`dot ${dotClass}`} />
           <span>{statusText}</span>
         </div>

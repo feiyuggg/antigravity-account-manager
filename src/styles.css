@@ -81,16 +81,17 @@ textarea {
 
 .titlebar {
   height: 56px;
-  padding: 0 20px 0 88px;
+  padding: 0 16px 0 80px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 10px;
   background: var(--bg-elevated);
   backdrop-filter: blur(18px);
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .titlebar-left,
@@ -98,7 +99,14 @@ textarea {
 .titlebar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.titlebar-left {
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .no-drag {
@@ -112,6 +120,14 @@ textarea {
   font-weight: 650;
   font-size: 14px;
   letter-spacing: -0.01em;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.brand span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand-badge {
@@ -125,6 +141,14 @@ textarea {
   background: var(--good-soft);
   color: var(--good);
   border: 1px solid rgba(34, 197, 94, 0.25);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+@media (max-width: 1080px) {
+  .brand-badge {
+    display: none;
+  }
 }
 
 .segmented {
@@ -133,6 +157,8 @@ textarea {
   padding: 3px;
   border-radius: 10px;
   border: 1px solid var(--border);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .segmented button {
@@ -141,12 +167,14 @@ textarea {
   color: var(--text-secondary);
   font-size: 12.5px;
   font-weight: 500;
-  padding: 5px 12px;
+  padding: 5px 10px;
   border-radius: 7px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.15s ease;
 }
 
@@ -160,13 +188,15 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 4px 9px;
   border-radius: 999px;
   font-size: 11.5px;
   font-weight: 500;
   background: var(--bg-muted);
   border: 1px solid var(--border);
   color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .dot {
